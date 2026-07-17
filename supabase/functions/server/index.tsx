@@ -207,11 +207,16 @@ app.post("/make-server-fd15274a/requests/:requestId/respond", async (c) => {
     return c.json({ error: "Already responded" }, 409);
   }
 
+  // Fetch request upfront so we can store takerName on the response
+  const request: any = await kv.get(`request:${requestId}`);
+
   const response = {
     id: responseId, requestId,
     donorId: body.donorId, donorName: body.donorName,
     donorBloodGroup: body.donorBloodGroup, donorPhone: body.donorPhone,
     donorEmail: body.donorEmail, donorCity: body.donorCity,
+    takerId: request?.takerId ?? "",
+    takerName: request?.takerName ?? "",
     message: body.message ?? "", status: "pending",
     createdAt: new Date().toISOString(),
   };
@@ -219,7 +224,7 @@ app.post("/make-server-fd15274a/requests/:requestId/respond", async (c) => {
   await kv.set(`response:${requestId}:${responseId}`, response);
 
   // Update responseCount
-  const request: any = await kv.get(`request:${requestId}`);
+  // (request already fetched above)
   if (request) {
     await kv.set(`request:${requestId}`, { ...request, responseCount: (request.responseCount ?? 0) + 1 });
 

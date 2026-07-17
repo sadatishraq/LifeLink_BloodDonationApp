@@ -93,6 +93,8 @@ interface Profile {
   state: string;
   lastDonationDate?: string;
   donationCount?: number;
+  ratingAvg?: number;
+  ratingCount?: number;
   medicalConditions?: string;
   availableTodonate?: boolean;
   createdAt: string;
@@ -123,6 +125,8 @@ interface DonorResponse {
   donorPhone: string;
   donorEmail: string;
   donorCity: string;
+  takerId?: string;
+  takerName?: string;
   message: string;
   status: "pending" | "accepted";
   createdAt: string;
@@ -146,6 +150,25 @@ interface DonorRating {
   stars: number;
   note: string;
   createdAt: string;
+}
+
+interface Conversation {
+  requestId: string;
+  otherName: string;
+  bloodGroup: BloodGroup;
+  lastMessage?: ChatMessage;
+  unreadCount: number;
+}
+
+function chatSeenKey(userId: string, requestId: string) {
+  return `lifelink_chat_seen_${userId}_${requestId}`;
+}
+function markChatRead(userId: string, requestId: string) {
+  localStorage.setItem(chatSeenKey(userId, requestId), new Date().toISOString());
+}
+function getLastSeen(userId: string, requestId: string): Date {
+  const v = localStorage.getItem(chatSeenKey(userId, requestId));
+  return v ? new Date(v) : new Date(0);
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────
@@ -235,6 +258,22 @@ function BloodGroupSelector({ value, onChange }: { value: BloodGroup | ""; onCha
           {bg}
         </button>
       ))}
+    </div>
+  );
+}
+
+function StarDisplay({ avg, count, size = "sm" }: { avg: number; count: number; size?: "sm" | "xs" }) {
+  const sz = size === "xs" ? "w-3 h-3" : "w-3.5 h-3.5";
+  return (
+    <div className="flex items-center gap-1">
+      <div className="flex items-center gap-0.5">
+        {[1, 2, 3, 4, 5].map(s => (
+          <Star key={s} className={`${sz} ${s <= Math.round(avg) ? "text-amber-400 fill-amber-400" : "text-muted-foreground/25 fill-muted-foreground/10"}`} />
+        ))}
+      </div>
+      <span className={`${size === "xs" ? "text-[10px]" : "text-xs"} text-muted-foreground`}>
+        {avg.toFixed(1)} ({count} review{count !== 1 ? "s" : ""})
+      </span>
     </div>
   );
 }
@@ -1545,7 +1584,7 @@ function OnboardingModal({ profile, onDone }: { profile: Profile; onDone: () => 
 
 // ── Dashboard ─────────────────────────────────────────────────────────────
 function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: () => void }) {
-  const [tab, setTab] = useState<"donate" | "request" | "activity" | "history">("donate");
+  const [tab, setTab] = useState<"donate" | "request" | "activity" | "history" | "messages">("donate");
   // Donate-side state (this user acting as donor)
   const [compatibleRequests, setCompatibleRequests] = useState<BloodRequest[]>([]);
   const [myDonationResponses, setMyDonationResponses] = useState<DonorResponse[]>([]);
@@ -1575,6 +1614,12 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
   const [ratingTarget, setRatingTarget] = useState<{ donorId: string; donorName: string; requestId: string } | null>(null);
   const [ratedRequestIds, setRatedRequestIds] = useState<Set<string>>(new Set());
   const [showOnboarding, setShowOnboarding] = useState(() => !localStorage.getItem(`lifelink_onboarded_${profile.id}`));
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [convLoading, setConvLoading] = useState(false);
+  const [messageBadge, setMessageBadge] = useState(0);
+  const [donorProfiles, setDonorProfiles] = useState<Map<string, Profile>>(new Map());
+  // requestId → rating given (for takers viewing history)
+  const [historyRatings, setHistoryRatings] = useState<Map<string, DonorRating[]>>(new Map());
 
   const loadAllData = useCallback(async () => {
     setLoading(true);
@@ -1590,7 +1635,11 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
       setCompatibleRequests(all.filter(r =>
         r.status === "open" && isCompatible(profile.bloodGroup, r.bloodGroup) && r.takerId !== profile.id
       ));
-      const donorResponses: DonorResponse[] = donorRes.responses ?? [];
+      const donorResponses: DonorResponse[] = (donorRes.responses ?? []).map((r: DonorResponse) => {
+        if (r.takerName) return r;
+        const req = all.find(req => req.id === r.requestId);
+        return req ? { ...r, takerName: req.patientName || req.takerName } : r;
+      });
       setMyDonationResponses(donorResponses);
       setRespondedIds(new Set(donorResponses.map(r => r.requestId)));
 
@@ -1609,6 +1658,18 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
   useEffect(() => {
     if (tab !== "profile" && tab !== "history") loadAllData();
   }, [tab, loadAllData]);
+
+  // Load donor profiles (for ratings) whenever we have request responses
+  useEffect(() => {
+    if (requestResponses.length === 0) return;
+    const uniqueDonorIds = [...new Set(requestResponses.map(r => r.donorId))];
+    Promise.all(uniqueDonorIds.map(id => api(`/profiles/${id}`).then(d => d.profile).catch(() => null)))
+      .then(profiles => {
+        const map = new Map<string, Profile>();
+        profiles.forEach(p => { if (p) map.set(p.id, p); });
+        setDonorProfiles(map);
+      });
+  }, [requestResponses]);
 
   useEffect(() => {
     if ("Notification" in window && Notification.permission === "granted") setNotifEnabled(true);
@@ -1656,8 +1717,17 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
     setHistoryLoading(true);
     try {
       const { records } = await api(`/history/${profile.id}`);
-      setHistory(records ?? []);
-      setFulfilledResponseIds(new Set((records ?? []).map((r: HistoryRecord) => r.responseId)));
+      const recs: HistoryRecord[] = records ?? [];
+      setHistory(recs);
+      setFulfilledResponseIds(new Set(recs.map((r: HistoryRecord) => r.responseId)));
+      // Load ratings for each unique donor in history
+      const uniqueDonorIds = [...new Set(recs.map(r => r.donorId))];
+      const ratingResults = await Promise.all(
+        uniqueDonorIds.map(id => api(`/ratings/${id}`).then(d => ({ id, ratings: d.ratings ?? [] })).catch(() => ({ id, ratings: [] })))
+      );
+      const map = new Map<string, DonorRating[]>();
+      ratingResults.forEach(({ id, ratings }) => map.set(id, ratings));
+      setHistoryRatings(map);
     } finally { setHistoryLoading(false); }
   }, [profile.id]);
 
@@ -1665,13 +1735,83 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
     if (tab === "history") loadHistory();
   }, [tab, loadHistory]);
 
+  const loadConversations = useCallback(async () => {
+    setConvLoading(true);
+    try {
+      // Gather all requestIds this user is part of
+      const [donorRes, takerRes] = await Promise.all([
+        api(`/donors/${profile.id}/responses`),
+        api(`/takers/${profile.id}/requests`),
+      ]);
+      const donorResponses: DonorResponse[] = donorRes.responses ?? [];
+      const myReqs: BloodRequest[] = takerRes.requests ?? [];
+
+      // convMap: requestId → { otherName, bloodGroup }
+      const convMap = new Map<string, { otherName: string; bloodGroup: BloodGroup }>();
+
+      // As DONOR: fetch the actual request to get the taker's real name (reliable for old + new records)
+      await Promise.all(donorResponses.map(async r => {
+        if (convMap.has(r.requestId)) return;
+        let takerName = r.takerName;
+        if (!takerName) {
+          const req = await api(`/requests/${r.requestId}`).catch(() => null);
+          takerName = req?.request?.patientName || req?.request?.takerName || "Recipient";
+        }
+        convMap.set(r.requestId, { otherName: takerName, bloodGroup: r.donorBloodGroup });
+      }));
+
+      // As TAKER: each donor who responded — use the donor's name from the response
+      const takerResponsesAll: DonorResponse[] = myReqs.length > 0
+        ? (await Promise.all(myReqs.map(r => api(`/requests/${r.id}/responses`).then(d => (d.responses ?? []) as DonorResponse[])))).flat()
+        : [];
+      takerResponsesAll.forEach(r => {
+        if (!convMap.has(r.requestId)) convMap.set(r.requestId, { otherName: r.donorName, bloodGroup: r.donorBloodGroup });
+      });
+
+      if (convMap.size === 0) { setConversations([]); setMessageBadge(0); return; }
+
+      // Fetch chat messages for each conversation
+      const results = await Promise.all(
+        Array.from(convMap.entries()).map(async ([requestId, meta]) => {
+          const { messages: msgs } = await api(`/chat/${requestId}`).catch(() => ({ messages: [] }));
+          const allMsgs: ChatMessage[] = msgs ?? [];
+          const lastSeen = getLastSeen(profile.id, requestId);
+          const unread = allMsgs.filter(m => m.senderId !== profile.id && new Date(m.createdAt) > lastSeen).length;
+          const lastMessage = allMsgs[allMsgs.length - 1];
+          return { requestId, ...meta, lastMessage, unreadCount: unread } as Conversation;
+        })
+      );
+
+      results.sort((a, b) => {
+        const at = a.lastMessage ? new Date(a.lastMessage.createdAt).getTime() : 0;
+        const bt = b.lastMessage ? new Date(b.lastMessage.createdAt).getTime() : 0;
+        return bt - at;
+      });
+
+      setConversations(results);
+      setMessageBadge(results.reduce((sum, c) => sum + c.unreadCount, 0));
+    } finally { setConvLoading(false); }
+  }, [profile.id]);
+
+  useEffect(() => {
+    if (tab === "messages") loadConversations();
+  }, [tab, loadConversations]);
+
+  // Refresh message badge every 30s regardless of active tab
+  useEffect(() => {
+    const t = setInterval(() => loadConversations(), 30_000);
+    loadConversations();
+    return () => clearInterval(t);
+  }, [loadConversations]);
+
   const [profileOpen, setProfileOpen] = useState(false);
 
   const tabs = [
-    { key: "donate",   label: "Donate Blood",   badge: compatibleRequests.length },
-    { key: "request",  label: "Request Blood",  badge: myRequests.length },
-    { key: "activity", label: "Activity",       badge: responseBadge },
-    { key: "history",  label: "History",        badge: history.length },
+    { key: "donate",    label: "Donate",    badge: compatibleRequests.length },
+    { key: "request",   label: "Request",   badge: myRequests.length },
+    { key: "messages",  label: "Messages",  badge: messageBadge },
+    { key: "activity",  label: "Activity",  badge: responseBadge },
+    { key: "history",   label: "History",   badge: history.length },
   ];
 
   return (
@@ -1748,6 +1888,15 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
                   <span className="text-foreground font-medium text-right">{v}</span>
                 </div>
               ))}
+              {/* Rating row — custom render with stars */}
+              <div className="flex items-center justify-between gap-4 py-2.5 border-t border-border text-sm">
+                <span className="text-muted-foreground shrink-0 w-32">Donor Rating</span>
+                <div className="text-right">
+                  {localProfile.ratingAvg && localProfile.ratingCount
+                    ? <StarDisplay avg={localProfile.ratingAvg} count={localProfile.ratingCount} />
+                    : <span className="text-foreground/50 text-xs">No ratings yet</span>}
+                </div>
+              </div>
             </div>
 
             {/* Drawer actions */}
@@ -1820,6 +1969,7 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
             <button key={t.key} onClick={() => {
               setTab(t.key as any);
               if (t.key === "activity") setResponseBadge(0);
+              if (t.key === "messages") setMessageBadge(0);
             }}
               className={`px-3 py-2.5 text-sm font-semibold transition-colors border-b-2 -mb-px flex items-center gap-1.5 whitespace-nowrap ${tab === t.key ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
               {t.label}
@@ -2052,9 +2202,9 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
                       </div>
                       {r.message && <p className="text-xs text-foreground/60 italic bg-accent/50 rounded px-3 py-2 mb-3">"{r.message}"</p>}
                       <button
-                        onClick={() => setChatTarget({ requestId: r.requestId, otherName: r.takerName ?? "Recipient" })}
+                        onClick={() => { markChatRead(profile.id, r.requestId); setChatTarget({ requestId: r.requestId, otherName: r.takerName || "Recipient" }); }}
                         className="w-full flex items-center justify-center gap-2 border border-border py-2 rounded-md text-xs font-medium hover:bg-secondary transition-colors text-muted-foreground hover:text-foreground mt-2">
-                        <MessageCircle className="w-3.5 h-3.5" /> Chat with Recipient
+                        <MessageCircle className="w-3.5 h-3.5" /> Chat with {r.takerName || "Recipient"}
                       </button>
                     </div>
                   ))}
@@ -2091,6 +2241,7 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
                             <div>
                               <p className="font-semibold text-foreground text-sm">{r.donorName}</p>
                               <p className="text-xs text-muted-foreground">{r.donorCity}</p>
+                              {(() => { const dp = donorProfiles.get(r.donorId); return dp?.ratingAvg && dp?.ratingCount ? <StarDisplay avg={dp.ratingAvg} count={dp.ratingCount} size="xs" /> : null; })()}
                             </div>
                           </div>
                           <span className="text-xs text-muted-foreground shrink-0">{timeAgo(r.createdAt)}</span>
@@ -2108,7 +2259,7 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
                         {r.message && <p className="text-xs text-foreground/60 italic bg-accent/50 rounded px-3 py-2 mb-3">"{r.message}"</p>}
                         <div className="flex gap-2 mb-2">
                           <button
-                            onClick={() => setChatTarget({ requestId: r.requestId, otherName: r.donorName })}
+                            onClick={() => { markChatRead(profile.id, r.requestId); setChatTarget({ requestId: r.requestId, otherName: r.donorName }); }}
                             className="flex-1 flex items-center justify-center gap-1.5 border border-border py-2 rounded-md text-xs font-medium hover:bg-secondary transition-colors text-muted-foreground hover:text-foreground">
                             <MessageCircle className="w-3.5 h-3.5" /> Chat
                           </button>
@@ -2137,6 +2288,71 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
                 </div>
               )}
             </section>
+          </div>
+        )}
+
+        {/* Messages tab */}
+        {tab === "messages" && (
+          <div>
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="font-display font-bold text-foreground">Messages</h3>
+                <p className="text-xs text-muted-foreground mt-0.5">Conversations with donors and recipients</p>
+              </div>
+              <button onClick={loadConversations} className="text-muted-foreground hover:text-foreground p-1.5 rounded-md hover:bg-secondary transition-colors">
+                <RefreshCw className={`w-4 h-4 ${convLoading ? "animate-spin" : ""}`} />
+              </button>
+            </div>
+            {convLoading ? (
+              <div className="flex items-center justify-center py-16 gap-2 text-muted-foreground"><Spinner /><span className="text-sm">Loading…</span></div>
+            ) : conversations.length === 0 ? (
+              <div className="text-center py-16 text-muted-foreground">
+                <MessageCircle className="w-10 h-10 mx-auto mb-3 opacity-30" />
+                <p className="text-sm font-medium">No conversations yet.</p>
+                <p className="text-xs mt-1 opacity-70">Respond to a blood request or post one to start chatting.</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {conversations.map(conv => (
+                  <button
+                    key={conv.requestId}
+                    onClick={() => {
+                      markChatRead(profile.id, conv.requestId);
+                      setChatTarget({ requestId: conv.requestId, otherName: conv.otherName });
+                      setConversations(prev => prev.map(c => c.requestId === conv.requestId ? { ...c, unreadCount: 0 } : c));
+                      setMessageBadge(prev => Math.max(0, prev - conv.unreadCount));
+                    }}
+                    className={`w-full text-left flex items-center gap-3 p-4 rounded-lg border transition-all hover:border-primary/40 ${conv.unreadCount > 0 ? "bg-primary/5 border-primary/30" : "bg-card border-border"}`}>
+                    {/* Avatar */}
+                    <div className="w-11 h-11 rounded-full bg-primary/10 text-primary flex items-center justify-center font-display font-bold text-sm shrink-0 relative">
+                      {conv.otherName.split(" ").map(n => n[0]).join("").slice(0, 2).toUpperCase()}
+                      {conv.unreadCount > 0 && (
+                        <span className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-primary text-primary-foreground text-[10px] font-bold flex items-center justify-center">
+                          {conv.unreadCount > 9 ? "9+" : conv.unreadCount}
+                        </span>
+                      )}
+                    </div>
+                    {/* Content */}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className={`text-sm truncate ${conv.unreadCount > 0 ? "font-bold text-foreground" : "font-semibold text-foreground"}`}>
+                          {conv.otherName}
+                        </p>
+                        {conv.lastMessage && (
+                          <span className="text-[10px] text-muted-foreground shrink-0">{timeAgo(conv.lastMessage.createdAt)}</span>
+                        )}
+                      </div>
+                      <p className={`text-xs truncate mt-0.5 ${conv.unreadCount > 0 ? "text-foreground/80 font-medium" : "text-muted-foreground"}`}>
+                        {conv.lastMessage
+                          ? (conv.lastMessage.senderId === profile.id ? `You: ${conv.lastMessage.text}` : conv.lastMessage.text)
+                          : "No messages yet — say hello!"}
+                      </p>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -2210,11 +2426,31 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
                           </div>
                         </div>
                         {rec.notes && (
-                          <div className="bg-accent/60 rounded-md px-3 py-2 text-xs text-foreground/70 italic flex gap-2">
+                          <div className="bg-accent/60 rounded-md px-3 py-2 text-xs text-foreground/70 italic flex gap-2 mb-3">
                             <MessageCircle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-primary/50" />
                             "{rec.notes}"
                           </div>
                         )}
+                        {/* Rating section */}
+                        {(() => {
+                          const ratingsForDonor = historyRatings.get(rec.donorId) ?? [];
+                          const ratingForThisRequest = ratingsForDonor.find(r => r.requestId === rec.requestId);
+                          if (!ratingForThisRequest) return null;
+                          return (
+                            <div className="border border-amber-200 bg-amber-50 rounded-md px-3 py-2.5">
+                              <div className="flex items-center justify-between mb-1">
+                                <span className="text-xs font-semibold text-amber-800">
+                                  {asDonor ? "Recipient's rating for you" : "Your rating for this donor"}
+                                </span>
+                                <StarDisplay avg={ratingForThisRequest.stars} count={1} size="xs" />
+                              </div>
+                              {ratingForThisRequest.note && (
+                                <p className="text-xs text-amber-700 italic">"{ratingForThisRequest.note}"</p>
+                              )}
+                              <p className="text-[10px] text-amber-600 mt-1">— {ratingForThisRequest.takerName}</p>
+                            </div>
+                          );
+                        })()}
                       </div>
                     </div>
                   );
@@ -2269,7 +2505,7 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
           currentUserId={localProfile.id}
           currentUserName={`${localProfile.firstName} ${localProfile.lastName}`}
           otherName={chatTarget.otherName}
-          onClose={() => setChatTarget(null)}
+          onClose={() => { setChatTarget(null); loadConversations(); }}
         />
       )}
 
