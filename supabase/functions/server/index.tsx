@@ -75,8 +75,11 @@ app.post("/make-server-fd15274a/auth/login", async (c) => {
   const auth = await kv.get(emailKey);
   if (!auth) return c.json({ error: "No account found with this email" }, 404);
 
-  const encoded = btoa(unescape(encodeURIComponent(password)));
-  if (auth.password !== encoded) return c.json({ error: "Incorrect password" }, 401);
+  const encodedSafe = btoa(unescape(encodeURIComponent(password)));
+  const encodedLegacy = btoa(password);
+  if (auth.password !== encodedSafe && auth.password !== encodedLegacy) {
+    return c.json({ error: "Incorrect password" }, 401);
+  }
 
   const profile = await kv.get(`profile:${auth.profileId}`);
   if (!profile) return c.json({ error: "Profile not found" }, 404);
@@ -97,6 +100,41 @@ app.get("/make-server-fd15274a/profiles/:id", async (c) => {
   const profile = await kv.get(`profile:${c.req.param("id")}`);
   if (!profile) return c.json({ error: "Not found" }, 404);
   return c.json({ profile });
+});
+
+app.put("/make-server-fd15274a/profiles/:id", async (c) => {
+  const body = await c.req.json();
+  const profile: any = await kv.get(`profile:${c.req.param("id")}`);
+  if (!profile) return c.json({ error: "Not found" }, 404);
+  const allowed = [
+    "firstName", "lastName", "phone", "altPhone",
+    "address", "city", "state",
+    "medicalConditions", "availableTodonate",
+    "hospital", "unitsRequired", "urgency", "reason",
+  ];
+  const patch: any = {};
+  for (const key of allowed) {
+    if (key in body) patch[key] = body[key];
+  }
+  const updated = { ...profile, ...patch };
+  await kv.set(`profile:${c.req.param("id")}`, updated);
+  return c.json({ profile: updated });
+});
+
+app.put("/make-server-fd15274a/profiles/:id/password", async (c) => {
+  const { currentPassword, newPassword } = await c.req.json();
+  const profile: any = await kv.get(`profile:${c.req.param("id")}`);
+  if (!profile) return c.json({ error: "Not found" }, 404);
+  const auth: any = await kv.get(`auth:${profile.email}`);
+  if (!auth) return c.json({ error: "Auth record not found" }, 404);
+  const encodedSafe = btoa(unescape(encodeURIComponent(currentPassword)));
+  const encodedLegacy = btoa(currentPassword);
+  if (auth.password !== encodedSafe && auth.password !== encodedLegacy) {
+    return c.json({ error: "Current password is incorrect" }, 401);
+  }
+  const newEncoded = btoa(unescape(encodeURIComponent(newPassword)));
+  await kv.set(`auth:${profile.email}`, { ...auth, password: newEncoded });
+  return c.json({ success: true });
 });
 
 // ── Blood Requests ────────────────────────────────────────────────────────
@@ -308,15 +346,34 @@ app.get("/make-server-fd15274a/history/:userId", async (c) => {
 });
 
 // ── Admin ─────────────────────────────────────────────────────────────────
-const ADMIN_USER = "admin";
-const ADMIN_PASS = "lifelink@admin";
+const ADMIN_DEFAULT_USER = "admin";
+const ADMIN_DEFAULT_PASS = "lifelink@admin";
+
+async function getAdminCredentials() {
+  const stored = await kv.get("admin:credentials");
+  return stored ?? { username: ADMIN_DEFAULT_USER, password: ADMIN_DEFAULT_PASS };
+}
 
 app.post("/make-server-fd15274a/admin/login", async (c) => {
   const { username, password } = await c.req.json();
-  if (username === ADMIN_USER && password === ADMIN_PASS) {
+  const creds = await getAdminCredentials();
+  if (username === creds.username && password === creds.password) {
     return c.json({ success: true });
   }
   return c.json({ error: "Invalid credentials" }, 401);
+});
+
+app.put("/make-server-fd15274a/admin/credentials", async (c) => {
+  const { currentPassword, newUsername, newPassword } = await c.req.json();
+  const creds = await getAdminCredentials();
+  if (currentPassword !== creds.password) {
+    return c.json({ error: "Current password is incorrect" }, 401);
+  }
+  await kv.set("admin:credentials", {
+    username: newUsername || creds.username,
+    password: newPassword || creds.password,
+  });
+  return c.json({ success: true });
 });
 
 app.get("/make-server-fd15274a/admin/stats", async (c) => {

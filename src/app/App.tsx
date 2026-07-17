@@ -85,6 +85,7 @@ interface Profile {
   gender: Gender;
   bloodGroup: BloodGroup;
   phone: string;
+  altPhone?: string;
   email: string;
   address: string;
   city: string;
@@ -1027,18 +1028,264 @@ function showBrowserNotification(title: string, body: string) {
   new Notification(title, { body, icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='%23c0152a' d='M12 2C12 2 4 9.5 4 14a8 8 0 0016 0C20 9.5 12 2 12 2z'/></svg>" });
 }
 
+// ── Edit Profile Modal ────────────────────────────────────────────────────
+function EditProfileModal({ profile, onClose, onSuccess }: {
+  profile: Profile; onClose: () => void; onSuccess: (updated: Profile) => void;
+}) {
+  const [form, setForm] = useState({
+    firstName: profile.firstName,
+    lastName: profile.lastName,
+    phone: profile.phone,
+    altPhone: profile.altPhone ?? "",
+    address: profile.address,
+    city: profile.city,
+    state: profile.state,
+    medicalConditions: profile.medicalConditions ?? "",
+    availableTodonate: profile.availableTodonate ?? true,
+    hospital: profile.hospital ?? "",
+    unitsRequired: profile.unitsRequired ?? 1,
+    urgency: profile.urgency ?? "Moderate",
+    reason: profile.reason ?? "",
+  });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const set = (key: string, val: any) => setForm(f => ({ ...f, [key]: val }));
+
+  const handleSave = async () => {
+    if (!form.firstName.trim() || !form.lastName.trim() || !form.phone.trim() || !form.address.trim() || !form.city.trim() || !form.state.trim()) {
+      setError("Name, phone, and address fields are required."); return;
+    }
+    setLoading(true); setError("");
+    try {
+      const data = await api(`/profiles/${profile.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ ...form, unitsRequired: Number(form.unitsRequired) }),
+      });
+      if (data.error) { setError(data.error); return; }
+      onSuccess(data.profile);
+    } catch { setError("Something went wrong."); }
+    finally { setLoading(false); }
+  };
+
+  const field = (label: string, key: string, type = "text", hint?: string) => (
+    <div>
+      <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">{label}{hint && <span className="ml-1 text-muted-foreground font-normal normal-case">{hint}</span>}</label>
+      <input type={type} value={(form as any)[key]} onChange={e => set(key, e.target.value)}
+        className="w-full mt-1 px-3 py-2 rounded-md bg-input-background border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
+    </div>
+  );
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+      <div className="bg-card rounded-xl shadow-xl w-full max-w-md flex flex-col max-h-[90vh]">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
+          <h3 className="font-display font-bold text-foreground">Edit Profile</h3>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+        </div>
+
+        <div className="overflow-y-auto px-6 py-4 space-y-4 flex-1">
+          {/* Personal */}
+          <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Personal Information</p>
+          <div className="grid grid-cols-2 gap-3">
+            {field("First Name", "firstName")}
+            {field("Last Name", "lastName")}
+          </div>
+
+          {/* Contact */}
+          <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest pt-2">Contact</p>
+          {field("Phone Number", "phone", "tel")}
+          {field("Alternative Phone", "altPhone", "tel", "(optional)")}
+
+          {/* Address */}
+          <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest pt-2">Address</p>
+          {field("Street Address", "address")}
+          <div className="grid grid-cols-2 gap-3">
+            {field("City", "city")}
+            {field("State / Province", "state")}
+          </div>
+
+          {/* Donor info */}
+          <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest pt-2">Donor Details</p>
+          {field("Medical Conditions", "medicalConditions", "text", "(optional)")}
+          <div className="flex items-center gap-3">
+            <button type="button" onClick={() => set("availableTodonate", !form.availableTodonate)}
+              className={`w-10 h-6 rounded-full transition-colors ${form.availableTodonate ? "bg-primary" : "bg-border"} relative`}>
+              <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${form.availableTodonate ? "translate-x-4" : "translate-x-0.5"}`} />
+            </button>
+            <span className="text-sm text-foreground font-medium">Available to donate</span>
+          </div>
+
+          {/* Requester info */}
+          <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest pt-2">Request Details</p>
+          {field("Hospital / Clinic", "hospital", "text", "(if requesting blood)")}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Units Required</label>
+              <input type="number" min={1} max={10} value={form.unitsRequired} onChange={e => set("unitsRequired", e.target.value)}
+                className="w-full mt-1 px-3 py-2 rounded-md bg-input-background border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Urgency</label>
+              <select value={form.urgency} onChange={e => set("urgency", e.target.value)}
+                className="w-full mt-1 px-3 py-2 rounded-md bg-input-background border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary">
+                {["Critical", "High", "Moderate", "Low"].map(u => <option key={u}>{u}</option>)}
+              </select>
+            </div>
+          </div>
+          {field("Reason / Medical Notes", "reason", "text", "(optional)")}
+        </div>
+
+        <div className="px-6 py-4 border-t border-border shrink-0 space-y-2">
+          {error && <p className="text-xs text-destructive">{error}</p>}
+          <button onClick={handleSave} disabled={loading}
+            className="w-full bg-primary text-primary-foreground py-2.5 rounded-md font-semibold text-sm hover:bg-primary/90 transition-colors disabled:opacity-60 flex items-center justify-center gap-2">
+            {loading ? <><Spinner /> Saving…</> : "Save Changes"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Change Name Modal ─────────────────────────────────────────────────────
+function ChangeNameModal({ profile, onClose, onSuccess }: {
+  profile: Profile; onClose: () => void; onSuccess: (updated: Profile) => void;
+}) {
+  const [firstName, setFirstName] = useState(profile.firstName);
+  const [lastName, setLastName] = useState(profile.lastName);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleSave = async () => {
+    if (!firstName.trim() || !lastName.trim()) { setError("Both fields are required."); return; }
+    setLoading(true); setError("");
+    try {
+      const data = await api(`/profiles/${profile.id}/name`, {
+        method: "PUT",
+        body: JSON.stringify({ firstName: firstName.trim(), lastName: lastName.trim() }),
+      });
+      if (data.error) { setError(data.error); return; }
+      onSuccess(data.profile);
+    } catch { setError("Something went wrong."); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+      <div className="bg-card rounded-xl shadow-xl w-full max-w-sm p-6">
+        <div className="flex items-center justify-between mb-5">
+          <h3 className="font-display font-bold text-foreground">Change Name</h3>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="space-y-3">
+          <div>
+            <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">First Name</label>
+            <input value={firstName} onChange={e => setFirstName(e.target.value)}
+              className="w-full mt-1 px-3 py-2 rounded-md bg-input-background border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
+          </div>
+          <div>
+            <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Last Name</label>
+            <input value={lastName} onChange={e => setLastName(e.target.value)}
+              className="w-full mt-1 px-3 py-2 rounded-md bg-input-background border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
+          </div>
+          {error && <p className="text-xs text-destructive">{error}</p>}
+          <button onClick={handleSave} disabled={loading}
+            className="w-full bg-primary text-primary-foreground py-2.5 rounded-md font-semibold text-sm hover:bg-primary/90 transition-colors disabled:opacity-60 flex items-center justify-center gap-2">
+            {loading ? <><Spinner /> Saving…</> : "Save Name"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Change Password Modal ──────────────────────────────────────────────────
+function ChangePasswordModal({ profile, onClose }: { profile: Profile; onClose: () => void }) {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [showCurrent, setShowCurrent] = useState(false);
+  const [showNext, setShowNext] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [done, setDone] = useState(false);
+
+  const handleSave = async () => {
+    if (!current || !next || !confirm) { setError("All fields are required."); return; }
+    if (next.length < 6) { setError("New password must be at least 6 characters."); return; }
+    if (next !== confirm) { setError("Passwords do not match."); return; }
+    setLoading(true); setError("");
+    try {
+      const data = await api(`/profiles/${profile.id}/password`, {
+        method: "PUT",
+        body: JSON.stringify({ currentPassword: current, newPassword: next }),
+      });
+      if (data.error) { setError(data.error); return; }
+      setDone(true);
+    } catch { setError("Something went wrong."); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+      <div className="bg-card rounded-xl shadow-xl w-full max-w-sm p-6">
+        <div className="flex items-center justify-between mb-5">
+          <h3 className="font-display font-bold text-foreground">Change Password</h3>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+        </div>
+        {done ? (
+          <div className="text-center py-6">
+            <CheckCircle className="w-10 h-10 text-green-600 mx-auto mb-3" />
+            <p className="font-semibold text-foreground">Password updated!</p>
+            <p className="text-xs text-muted-foreground mt-1 mb-4">Your new password is active.</p>
+            <button onClick={onClose} className="w-full bg-primary text-primary-foreground py-2.5 rounded-md font-semibold text-sm hover:bg-primary/90 transition-colors">Done</button>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {[
+              { label: "Current Password", val: current, set: setCurrent, show: showCurrent, toggle: () => setShowCurrent(p => !p) },
+              { label: "New Password",     val: next,    set: setNext,    show: showNext,    toggle: () => setShowNext(p => !p) },
+              { label: "Confirm New Password", val: confirm, set: setConfirm, show: showNext, toggle: () => setShowNext(p => !p) },
+            ].map(f => (
+              <div key={f.label}>
+                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">{f.label}</label>
+                <div className="relative mt-1">
+                  <input type={f.show ? "text" : "password"} value={f.val} onChange={e => f.set(e.target.value)}
+                    className="w-full px-3 py-2 pr-9 rounded-md bg-input-background border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
+                  <button type="button" onClick={f.toggle} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                    {f.show ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+            ))}
+            {error && <p className="text-xs text-destructive">{error}</p>}
+            <button onClick={handleSave} disabled={loading}
+              className="w-full bg-primary text-primary-foreground py-2.5 rounded-md font-semibold text-sm hover:bg-primary/90 transition-colors disabled:opacity-60 flex items-center justify-center gap-2">
+              {loading ? <><Spinner /> Saving…</> : "Update Password"}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Dashboard ─────────────────────────────────────────────────────────────
 function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: () => void }) {
-  const isDonor = profile.role === "donor";
-  const [tab, setTab] = useState<"profile" | "requests" | "responses">("profile");
-  const [requests, setRequests] = useState<BloodRequest[]>([]);
-  const [responses, setResponses] = useState<DonorResponse[]>([]);
-  const [myRequests, setMyRequests] = useState<BloodRequest[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [respondTarget, setRespondTarget] = useState<BloodRequest | null>(null);
+  const [tab, setTab] = useState<"profile" | "donate" | "request" | "activity" | "history">("profile");
+  // Donate-side state (this user acting as donor)
+  const [compatibleRequests, setCompatibleRequests] = useState<BloodRequest[]>([]);
+  const [myDonationResponses, setMyDonationResponses] = useState<DonorResponse[]>([]);
   const [respondedIds, setRespondedIds] = useState<Set<string>>(new Set());
   const [successId, setSuccessId] = useState<string | null>(null);
+  // Request-side state (this user acting as taker)
+  const [myRequests, setMyRequests] = useState<BloodRequest[]>([]);
+  const [requestResponses, setRequestResponses] = useState<DonorResponse[]>([]);
   const [responseBadge, setResponseBadge] = useState(0);
+
+  const [loading, setLoading] = useState(false);
+  const [respondTarget, setRespondTarget] = useState<BloodRequest | null>(null);
   const [notifEnabled, setNotifEnabled] = useState(false);
   const prevResponseCount = useRef(0);
   const [history, setHistory] = useState<HistoryRecord[]>([]);
@@ -1048,108 +1295,92 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
   const [showNewRequest, setShowNewRequest] = useState(false);
   const [showDonationWarning, setShowDonationWarning] = useState(false);
   const [pendingRespondTarget, setPendingRespondTarget] = useState<BloodRequest | null>(null);
+  const [showChangeName, setShowChangeName] = useState(false);
+  const [showChangePassword, setShowChangePassword] = useState(false);
+  const [showEditProfile, setShowEditProfile] = useState(false);
+  const [localProfile, setLocalProfile] = useState(profile);
 
-  const loadDonorData = useCallback(async () => {
+  const loadAllData = useCallback(async () => {
     setLoading(true);
     try {
-      const [reqRes, myRes] = await Promise.all([
+      const [reqRes, donorRes, takerRes] = await Promise.all([
         api("/requests"),
         api(`/donors/${profile.id}/responses`),
+        api(`/takers/${profile.id}/requests`),
       ]);
-      const all: BloodRequest[] = reqRes.requests ?? [];
-      setRequests(all.filter(r => r.status === "open" && isCompatible(profile.bloodGroup, r.bloodGroup) && r.takerId !== profile.id));
-      const donorResponses: DonorResponse[] = myRes.responses ?? [];
-      setResponses(donorResponses);
-      setRespondedIds(new Set(donorResponses.map(r => r.requestId)));
-    } finally { setLoading(false); }
-  }, [profile.id, profile.bloodGroup]);
 
-  const loadTakerData = useCallback(async () => {
-    setLoading(true);
-    try {
-      const mine = await api(`/takers/${profile.id}/requests`);
-      const myReqs: BloodRequest[] = mine.requests ?? [];
+      // Donate side
+      const all: BloodRequest[] = reqRes.requests ?? [];
+      setCompatibleRequests(all.filter(r =>
+        r.status === "open" && isCompatible(profile.bloodGroup, r.bloodGroup) && r.takerId !== profile.id
+      ));
+      const donorResponses: DonorResponse[] = donorRes.responses ?? [];
+      setMyDonationResponses(donorResponses);
+      setRespondedIds(new Set(donorResponses.map(r => r.requestId)));
+
+      // Request side
+      const myReqs: BloodRequest[] = takerRes.requests ?? [];
       setMyRequests(myReqs);
       if (myReqs.length > 0) {
         const allRes = await Promise.all(myReqs.map(r => api(`/requests/${r.id}/responses`).then(d => d.responses ?? [])));
         const flat = allRes.flat() as DonorResponse[];
-        setResponses(flat);
+        setRequestResponses(flat);
         setResponseBadge(flat.length);
       }
     } finally { setLoading(false); }
-  }, [profile.id]);
+  }, [profile.id, profile.bloodGroup]);
 
   useEffect(() => {
-    if (tab !== "profile") {
-      if (isDonor) loadDonorData(); else loadTakerData();
-    }
-  }, [tab, isDonor, loadDonorData, loadTakerData]);
+    if (tab !== "profile" && tab !== "history") loadAllData();
+  }, [tab, loadAllData]);
 
-  // Check notification permission on mount
   useEffect(() => {
-    if ("Notification" in window && Notification.permission === "granted") {
-      setNotifEnabled(true);
-    }
+    if ("Notification" in window && Notification.permission === "granted") setNotifEnabled(true);
   }, []);
 
-  // Poll for new responses every 30s (taker) or new requests every 30s (donor)
+  // Poll every 30s for new requests and response counts
   useEffect(() => {
     const poll = async () => {
       try {
-        if (!isDonor) {
-          // Taker: poll response count
-          const { count } = await api(`/takers/${profile.id}/response-count`);
-          if (count > prevResponseCount.current && prevResponseCount.current > 0) {
-            const diff = count - prevResponseCount.current;
-            setResponseBadge(count);
-            showBrowserNotification(
-              "🩸 New donor response!",
-              `${diff} new donor${diff > 1 ? "s have" : " has"} responded to your blood request.`
-            );
-          } else {
-            setResponseBadge(count);
-          }
-          prevResponseCount.current = count;
+        const [{ requests: all }, { count }] = await Promise.all([
+          api("/requests"),
+          api(`/takers/${profile.id}/response-count`),
+        ]);
+        const compatible = (all as BloodRequest[]).filter(
+          r => r.status === "open" && isCompatible(profile.bloodGroup, r.bloodGroup) && r.takerId !== profile.id
+        );
+        setCompatibleRequests(compatible);
+        if (count > prevResponseCount.current && prevResponseCount.current > 0) {
+          const diff = count - prevResponseCount.current;
+          setResponseBadge(count);
+          showBrowserNotification("🩸 New donor response!", `${diff} new donor${diff > 1 ? "s have" : " has"} responded to your blood request.`);
         } else {
-          // Donor: poll for compatible open requests
-          const { requests: all } = await api("/requests");
-          const compatible = (all as BloodRequest[]).filter(
-            r => r.status === "open" && isCompatible(profile.bloodGroup, r.bloodGroup) && r.takerId !== profile.id
-          );
-          const prev = prevResponseCount.current;
-          if (compatible.length > prev && prev > 0) {
-            showBrowserNotification(
-              "🩸 New blood request!",
-              `A ${compatible[0]?.bloodGroup} blood request needs your help in ${compatible[0]?.city}.`
-            );
-          }
-          prevResponseCount.current = compatible.length;
-          setRequests(compatible);
+          setResponseBadge(count);
         }
+        if (compatible.length > prevResponseCount.current && prevResponseCount.current > 0) {
+          showBrowserNotification("🩸 New blood request!", `A ${compatible[0]?.bloodGroup} blood request in ${compatible[0]?.city} needs help.`);
+        }
+        prevResponseCount.current = count;
       } catch { /* silent */ }
     };
-
-    poll(); // run immediately
+    poll();
     const interval = setInterval(poll, 30_000);
     return () => clearInterval(interval);
-  }, [profile.id, profile.bloodGroup, isDonor]);
+  }, [profile.id, profile.bloodGroup]);
 
   const handleRespondSuccess = (requestId: string) => {
     setRespondTarget(null);
     setRespondedIds(prev => new Set([...prev, requestId]));
     setSuccessId(requestId);
     setTimeout(() => setSuccessId(null), 4000);
-    loadDonorData();
+    loadAllData();
   };
-
-  const refresh = () => { if (isDonor) loadDonorData(); else loadTakerData(); };
 
   const loadHistory = useCallback(async () => {
     setHistoryLoading(true);
     try {
       const { records } = await api(`/history/${profile.id}`);
       setHistory(records ?? []);
-      // pre-populate fulfilled IDs so UI reflects them immediately
       setFulfilledResponseIds(new Set((records ?? []).map((r: HistoryRecord) => r.responseId)));
     } finally { setHistoryLoading(false); }
   }, [profile.id]);
@@ -1158,13 +1389,12 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
     if (tab === "history") loadHistory();
   }, [tab, loadHistory]);
 
-  const requestsBadge = isDonor ? requests.length : myRequests.length;
-
   const tabs = [
-    { key: "profile",   label: "My Profile",                            badge: 0 },
-    { key: "requests",  label: isDonor ? "Live Requests" : "My Requests", badge: requestsBadge },
-    { key: "responses", label: isDonor ? "My Responses" : "Donor Responses", badge: !isDonor ? responseBadge : responses.length },
-    { key: "history",   label: "History",                               badge: history.length },
+    { key: "profile",  label: "My Profile",    badge: 0 },
+    { key: "donate",   label: "Donate Blood",   badge: compatibleRequests.length },
+    { key: "request",  label: "Request Blood",  badge: myRequests.length },
+    { key: "activity", label: "Activity",       badge: responseBadge },
+    { key: "history",  label: "History",        badge: history.length },
   ];
 
   return (
@@ -1176,17 +1406,13 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
         </div>
         <div className="flex items-center gap-2">
           <div className="text-right hidden sm:block">
-            <p className="text-sm font-semibold text-foreground leading-none">{profile.firstName} {profile.lastName}</p>
-            <p className="text-xs text-muted-foreground mt-0.5">{isDonor ? "Donor" : "Requester"} · {profile.bloodGroup}</p>
+            <p className="text-sm font-semibold text-foreground leading-none">{localProfile.firstName} {localProfile.lastName}</p>
+            <p className="text-xs text-muted-foreground mt-0.5">{localProfile.bloodGroup} · Donor &amp; Recipient</p>
           </div>
           {!notifEnabled && "Notification" in window && Notification.permission !== "denied" && (
             <button
-              onClick={async () => {
-                const granted = await requestNotificationPermission();
-                setNotifEnabled(granted);
-              }}
+              onClick={async () => { const granted = await requestNotificationPermission(); setNotifEnabled(granted); }}
               className="text-xs bg-accent text-accent-foreground border border-primary/20 px-2.5 py-1.5 rounded-md hover:bg-primary hover:text-primary-foreground transition-colors font-medium flex items-center gap-1.5"
-              title="Enable push notifications"
             >
               🔔 Enable alerts
             </button>
@@ -1204,17 +1430,13 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
       </header>
 
       <div className="flex-1 max-w-2xl mx-auto w-full px-4 py-6">
-        {/* Status summary strip */}
+        {/* Status strip */}
         <div className="grid grid-cols-3 gap-3 mb-6">
-          {(isDonor ? [
-            { icon: <Heart className="w-4 h-4" />, label: "Blood Group", val: profile.bloodGroup },
-            { icon: <Activity className="w-4 h-4" />, label: "Status", val: profile.availableTodonate ? "Available" : "Unavailable" },
-            { icon: <Droplets className="w-4 h-4" />, label: "Live Requests", val: requests.length > 0 ? `${requests.length} open` : tab === "requests" ? "0 open" : "—" },
-          ] : [
-            { icon: <Droplets className="w-4 h-4" />, label: "Blood Needed", val: profile.bloodGroup },
-            { icon: <AlertCircle className="w-4 h-4" />, label: "Urgency", val: profile.urgency ?? "—" },
-            { icon: <MessageCircle className="w-4 h-4" />, label: "Responses", val: responses.length > 0 ? `${responses.length} donor${responses.length > 1 ? "s" : ""}` : tab === "responses" ? "None yet" : "—" },
-          ]).map(s => (
+          {[
+            { icon: <Heart className="w-4 h-4" />,       label: "Blood Group",     val: profile.bloodGroup },
+            { icon: <Droplets className="w-4 h-4" />,    label: "Can Donate To",   val: `${compatibleRequests.length} request${compatibleRequests.length !== 1 ? "s" : ""}` },
+            { icon: <MessageCircle className="w-4 h-4" />, label: "My Requests",   val: `${myRequests.length} posted` },
+          ].map(s => (
             <div key={s.label} className="bg-card border border-border rounded-lg p-3.5 text-center">
               <div className="w-7 h-7 rounded-md bg-accent flex items-center justify-center text-primary mx-auto mb-2">{s.icon}</div>
               <div className="font-display font-bold text-base text-foreground truncate">{s.val}</div>
@@ -1228,7 +1450,7 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
           {tabs.map(t => (
             <button key={t.key} onClick={() => {
               setTab(t.key as any);
-              if (t.key === "responses" && !isDonor) setResponseBadge(0);
+              if (t.key === "activity") setResponseBadge(0);
             }}
               className={`px-3 py-2.5 text-sm font-semibold transition-colors border-b-2 -mb-px flex items-center gap-1.5 whitespace-nowrap ${tab === t.key ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
               {t.label}
@@ -1246,48 +1468,39 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
           <div className="space-y-4">
             <div className="bg-card border border-border rounded-lg p-5">
               <div className="flex items-start gap-4 mb-4">
-                <div className={`w-14 h-14 rounded-md flex items-center justify-center text-xl font-bold shrink-0 ${isDonor ? "bg-primary text-primary-foreground" : "bg-secondary text-foreground"}`}>
-                  {profile.firstName[0]}{profile.lastName[0]}
+                <div className="w-14 h-14 rounded-md bg-primary text-primary-foreground flex items-center justify-center text-xl font-bold shrink-0">
+                  {localProfile.firstName[0]}{localProfile.lastName[0]}
                 </div>
                 <div className="flex-1">
-                  <h2 className="font-display text-xl font-bold text-foreground">{profile.firstName} {profile.lastName}</h2>
-                  <p className="text-muted-foreground text-sm">{isDonor ? "Registered Donor" : "Blood Requester"}</p>
+                  <h2 className="font-display text-xl font-bold text-foreground">{localProfile.firstName} {localProfile.lastName}</h2>
+                  <p className="text-muted-foreground text-sm">Donor &amp; Recipient</p>
                   <div className="flex items-center gap-2 mt-1.5">
-                    <span className="font-display font-extrabold text-primary text-lg">{profile.bloodGroup}</span>
-                    {isDonor && (
-                      <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${profile.availableTodonate ? "bg-green-50 text-green-700 border-green-200" : "bg-secondary text-muted-foreground border-border"}`}>
-                        {profile.availableTodonate ? "Available" : "Unavailable"}
-                      </span>
-                    )}
-                    {!isDonor && profile.urgency && (
-                      <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${URGENCY_COLORS[profile.urgency].badge}`}>
-                        {profile.urgency} urgency
+                    <span className="font-display font-extrabold text-primary text-lg">{localProfile.bloodGroup}</span>
+                    {localProfile.availableTodonate !== undefined && (
+                      <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${localProfile.availableTodonate ? "bg-green-50 text-green-700 border-green-200" : "bg-secondary text-muted-foreground border-border"}`}>
+                        {localProfile.availableTodonate ? "Available to donate" : "Not available"}
                       </span>
                     )}
                   </div>
                 </div>
               </div>
-
               <div className="border-t border-border pt-4 space-y-2.5">
                 {[
-                  ["Full Name", `${profile.firstName} ${profile.lastName}`],
-                  ["Date of Birth", formatDate(profile.dob)],
-                  ["Gender", profile.gender],
-                  ["Blood Group", profile.bloodGroup],
-                  ["Email", profile.email],
-                  ["Phone", profile.phone],
-                  ["Address", `${profile.address}, ${profile.city}, ${profile.state}`],
-                  ...(isDonor ? [
-                    ["Last Donation", profile.lastDonationDate ? formatDate(profile.lastDonationDate) : "First-time donor"],
-                    ["Medical Conditions", profile.medicalConditions || "None reported"],
-                    ["Availability", profile.availableTodonate ? "Available to donate" : "Not currently available"],
-                  ] : [
-                    ["Hospital", profile.hospital || "—"],
-                    ["Units Required", `${profile.unitsRequired ?? 1}`],
-                    ["Urgency Level", profile.urgency ?? "—"],
-                    ["Medical Notes", profile.reason || "—"],
-                  ]),
-                ].map(([k, v]) => (
+                  ["Full Name", `${localProfile.firstName} ${localProfile.lastName}`],
+                  ["Date of Birth", formatDate(localProfile.dob)],
+                  ["Gender", localProfile.gender],
+                  ["Blood Group", localProfile.bloodGroup],
+                  ["Email", localProfile.email],
+                  ["Phone", localProfile.phone],
+                  localProfile.altPhone ? ["Alternative Phone", localProfile.altPhone] : null,
+                  ["Address", `${localProfile.address}, ${localProfile.city}, ${localProfile.state}`],
+                  localProfile.lastDonationDate ? ["Last Donation", formatDate(localProfile.lastDonationDate)] : ["Donation Status", "First-time donor"],
+                  localProfile.medicalConditions ? ["Medical Conditions", localProfile.medicalConditions] : null,
+                  localProfile.hospital ? ["Hospital", localProfile.hospital] : null,
+                  localProfile.unitsRequired ? ["Units Required", `${localProfile.unitsRequired}`] : null,
+                  localProfile.urgency ? ["Urgency Level", localProfile.urgency] : null,
+                  localProfile.reason ? ["Medical Notes", localProfile.reason] : null,
+                ].filter(Boolean).map(([k, v]) => (
                   <div key={k} className="flex items-start justify-between gap-4 text-sm py-2 border-b border-border last:border-0">
                     <span className="text-muted-foreground shrink-0">{k}</span>
                     <span className="text-foreground font-medium text-right">{v}</span>
@@ -1295,49 +1508,59 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
                 ))}
               </div>
             </div>
-          </div>
-        )}
 
-        {/* Requests tab */}
-        {tab === "requests" && (
-          <div>
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <h3 className="font-display font-bold text-foreground">
-                  {isDonor ? "Compatible Blood Requests" : "Your Blood Requests"}
-                </h3>
-                {isDonor && (
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    Matching your <span className="font-semibold text-primary">{profile.bloodGroup}</span> blood group
-                  </p>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                {!isDonor && (
-                  <button onClick={() => setShowNewRequest(true)}
-                    className="flex items-center gap-1.5 bg-primary text-primary-foreground text-xs font-semibold px-3 py-1.5 rounded-md hover:bg-primary/90 transition-colors">
-                    <Plus className="w-3.5 h-3.5" /> New Request
-                  </button>
-                )}
-                <button onClick={refresh} className="text-muted-foreground hover:text-foreground p-1.5 rounded-md hover:bg-secondary transition-colors">
-                  <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+            {/* Account settings */}
+            <div className="bg-card border border-border rounded-lg p-5">
+              <h4 className="font-display font-bold text-foreground mb-4 flex items-center gap-2">
+                <Lock className="w-4 h-4 text-primary" /> Account Settings
+              </h4>
+              <div className="space-y-2">
+                <button onClick={() => setShowEditProfile(true)}
+                  className="w-full flex items-center justify-between px-4 py-3 rounded-md bg-secondary hover:bg-muted transition-colors text-sm">
+                  <span className="font-medium text-foreground">Edit Profile Info</span>
+                  <ChevronRight className="w-4 h-4 text-muted-foreground" />
+                </button>
+                <button onClick={() => setShowChangeName(true)}
+                  className="w-full flex items-center justify-between px-4 py-3 rounded-md bg-secondary hover:bg-muted transition-colors text-sm">
+                  <span className="font-medium text-foreground">Change Name</span>
+                  <ChevronRight className="w-4 h-4 text-muted-foreground" />
+                </button>
+                <button onClick={() => setShowChangePassword(true)}
+                  className="w-full flex items-center justify-between px-4 py-3 rounded-md bg-secondary hover:bg-muted transition-colors text-sm">
+                  <span className="font-medium text-foreground">Change Password</span>
+                  <ChevronRight className="w-4 h-4 text-muted-foreground" />
                 </button>
               </div>
             </div>
+          </div>
+        )}
 
-            {/* Donor eligibility banner */}
-            {isDonor && (() => {
-              const { eligible, daysLeft, daysSinceLast } = donorEligibility(profile.lastDonationDate);
+        {/* Donate Blood tab */}
+        {tab === "donate" && (
+          <div>
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="font-display font-bold text-foreground">Compatible Blood Requests</h3>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Matching your <span className="font-semibold text-primary">{profile.bloodGroup}</span> blood group
+                </p>
+              </div>
+              <button onClick={loadAllData} className="text-muted-foreground hover:text-foreground p-1.5 rounded-md hover:bg-secondary transition-colors">
+                <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+              </button>
+            </div>
+
+            {/* Eligibility banner */}
+            {(() => {
+              const { eligible, daysLeft, daysSinceLast } = donorEligibility(localProfile.lastDonationDate);
               if (eligible || daysSinceLast === Infinity) return null;
               return (
                 <div className="bg-amber-50 border border-amber-200 rounded-lg p-3.5 mb-4 flex items-start gap-3">
                   <AlertCircle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
                   <div>
-                    <p className="text-sm font-semibold text-amber-800">
-                      {daysLeft} day{daysLeft !== 1 ? "s" : ""} until recommended donation window
-                    </p>
+                    <p className="text-sm font-semibold text-amber-800">{daysLeft} day{daysLeft !== 1 ? "s" : ""} until recommended donation window</p>
                     <p className="text-xs text-amber-700 mt-0.5">
-                      Your last donation was {daysSinceLast} day{daysSinceLast !== 1 ? "s" : ""} ago. The recommended waiting period is {DONATION_WAIT_DAYS} days. You can still respond, but you will be shown a warning.
+                      Last donation was {daysSinceLast} day{daysSinceLast !== 1 ? "s" : ""} ago. WHO recommends waiting {DONATION_WAIT_DAYS} days between donations.
                     </p>
                   </div>
                 </div>
@@ -1345,22 +1568,16 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
             })()}
 
             {loading ? (
-              <div className="flex items-center justify-center py-16 gap-2 text-muted-foreground">
-                <Spinner /><span className="text-sm">Loading...</span>
-              </div>
-            ) : (isDonor ? requests : myRequests).length === 0 ? (
+              <div className="flex items-center justify-center py-16 gap-2 text-muted-foreground"><Spinner /><span className="text-sm">Loading…</span></div>
+            ) : compatibleRequests.length === 0 ? (
               <div className="text-center py-16 text-muted-foreground">
                 <Droplets className="w-10 h-10 mx-auto mb-3 opacity-30" />
-                <p className="text-sm font-medium">
-                  {isDonor ? "No compatible requests right now." : "No requests found."}
-                </p>
-                <p className="text-xs mt-1 opacity-70">
-                  {isDonor ? "Check back soon — requests update in real time." : "Your request was posted automatically when you registered."}
-                </p>
+                <p className="text-sm font-medium">No compatible requests right now.</p>
+                <p className="text-xs mt-1 opacity-70">Check back soon — requests update in real time.</p>
               </div>
             ) : (
               <div className="space-y-3">
-                {(isDonor ? requests : myRequests).map(req => {
+                {compatibleRequests.map(req => {
                   const uc = URGENCY_COLORS[req.urgency];
                   const responded = respondedIds.has(req.id);
                   const isSuccess = successId === req.id;
@@ -1384,46 +1601,30 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
                           <span className="text-xs text-muted-foreground">{timeAgo(req.createdAt)}</span>
                         </div>
                       </div>
-
                       <div className="flex items-center gap-4 text-xs text-muted-foreground mb-3">
                         <span className="flex items-center gap-1"><MapPin className="w-3 h-3" />{req.city}</span>
                         <span className="flex items-center gap-1"><Plus className="w-3 h-3" />{req.unitsRequired} unit{req.unitsRequired > 1 ? "s" : ""}</span>
                         <span className="flex items-center gap-1"><MessageCircle className="w-3 h-3" />{req.responseCount} response{req.responseCount !== 1 ? "s" : ""}</span>
                       </div>
-
                       {req.reason && <p className="text-xs text-muted-foreground mb-3 line-clamp-2">{req.reason}</p>}
-
                       <div className="border-t border-border pt-3">
-                        {isDonor ? (
-                          isSuccess ? (
-                            <div className="flex items-center gap-2 text-green-700 text-sm font-semibold">
-                              <CheckCircle className="w-4 h-4" /> Response sent! Taker can now see your contact info.
-                            </div>
-                          ) : responded ? (
-                            <div className="flex items-center gap-2 text-muted-foreground text-sm">
-                              <CheckCircle className="w-4 h-4 text-green-600" /> You already responded.
-                            </div>
-                          ) : (
-                            <button onClick={() => {
-                              const { eligible } = donorEligibility(profile.lastDonationDate);
-                              if (!eligible) {
-                                setPendingRespondTarget(req);
-                                setShowDonationWarning(true);
-                              } else {
-                                setRespondTarget(req);
-                              }
-                            }}
-                              className="w-full bg-primary text-primary-foreground py-2 rounded-md text-sm font-semibold flex items-center justify-center gap-2 hover:bg-primary/90 transition-colors">
-                              <Heart className="w-4 h-4" /> I can help — Respond
-                            </button>
-                          )
-                        ) : (
-                          <div className="flex items-center justify-between">
-                            <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${req.status === "open" ? "bg-blue-50 text-blue-700 border-blue-200" : "bg-green-50 text-green-700 border-green-200"}`}>
-                              {req.status === "open" ? "Active" : "Fulfilled"}
-                            </span>
-                            <span className="text-xs text-muted-foreground">{req.responseCount} donor{req.responseCount !== 1 ? "s" : ""} responded</span>
+                        {isSuccess ? (
+                          <div className="flex items-center gap-2 text-green-700 text-sm font-semibold">
+                            <CheckCircle className="w-4 h-4" /> Response sent! They can now see your contact info.
                           </div>
+                        ) : responded ? (
+                          <div className="flex items-center gap-2 text-muted-foreground text-sm">
+                            <CheckCircle className="w-4 h-4 text-green-600" /> You already responded.
+                          </div>
+                        ) : (
+                          <button onClick={() => {
+                            const { eligible } = donorEligibility(localProfile.lastDonationDate);
+                            if (!eligible) { setPendingRespondTarget(req); setShowDonationWarning(true); }
+                            else setRespondTarget(req);
+                          }}
+                            className="w-full bg-primary text-primary-foreground py-2 rounded-md text-sm font-semibold flex items-center justify-center gap-2 hover:bg-primary/90 transition-colors">
+                            <Heart className="w-4 h-4" /> I can help — Respond
+                          </button>
                         )}
                       </div>
                     </div>
@@ -1434,51 +1635,148 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
           </div>
         )}
 
-        {/* Responses tab */}
-        {tab === "responses" && (
+        {/* Request Blood tab */}
+        {tab === "request" && (
           <div>
             <div className="flex items-center justify-between mb-4">
-              <h3 className="font-display font-bold text-foreground">
-                {isDonor ? "Your Donation Activity" : "Donors Who Responded"}
-              </h3>
-              <button onClick={refresh} className="text-muted-foreground hover:text-foreground p-1.5 rounded-md hover:bg-secondary transition-colors">
-                <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
-              </button>
+              <div>
+                <h3 className="font-display font-bold text-foreground">Your Blood Requests</h3>
+                <p className="text-xs text-muted-foreground mt-0.5">Post requests when you need blood</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={() => setShowNewRequest(true)}
+                  className="flex items-center gap-1.5 bg-primary text-primary-foreground text-xs font-semibold px-3 py-1.5 rounded-md hover:bg-primary/90 transition-colors">
+                  <Plus className="w-3.5 h-3.5" /> New Request
+                </button>
+                <button onClick={loadAllData} className="text-muted-foreground hover:text-foreground p-1.5 rounded-md hover:bg-secondary transition-colors">
+                  <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+                </button>
+              </div>
             </div>
 
             {loading ? (
-              <div className="flex items-center justify-center py-16 gap-2 text-muted-foreground">
-                <Spinner /><span className="text-sm">Loading...</span>
-              </div>
-            ) : responses.length === 0 ? (
+              <div className="flex items-center justify-center py-16 gap-2 text-muted-foreground"><Spinner /><span className="text-sm">Loading…</span></div>
+            ) : myRequests.length === 0 ? (
               <div className="text-center py-16 text-muted-foreground">
-                <Activity className="w-10 h-10 mx-auto mb-3 opacity-30" />
-                <p className="text-sm font-medium">
-                  {isDonor ? "No responses sent yet." : "No donors have responded yet."}
-                </p>
-                <p className="text-xs mt-1 opacity-70">
-                  {isDonor ? "Browse Live Requests to start helping." : "Compatible donors will appear here once they respond."}
-                </p>
+                <Droplets className="w-10 h-10 mx-auto mb-3 opacity-30" />
+                <p className="text-sm font-medium">No blood requests posted yet.</p>
+                <p className="text-xs mt-1 opacity-70">Tap "+ New Request" to ask the community for help.</p>
               </div>
             ) : (
               <div className="space-y-3">
-                {responses.map(r => (
-                  <div key={r.id} className="bg-card border border-border rounded-lg p-4 hover:border-primary/30 transition-colors">
-                    <div className="flex items-start justify-between gap-3 mb-3">
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-md bg-accent border border-primary/20 flex items-center justify-center font-display font-extrabold text-sm text-primary">
-                          {r.donorBloodGroup}
+                {myRequests.map(req => {
+                  const uc = URGENCY_COLORS[req.urgency];
+                  return (
+                    <div key={req.id} className="bg-card border border-border rounded-lg p-4 hover:border-primary/30 transition-all">
+                      <div className="flex items-start justify-between gap-3 mb-3">
+                        <div className="flex items-center gap-3">
+                          <div className={`w-10 h-10 rounded-md flex items-center justify-center font-display font-extrabold text-sm ${uc.card} border`}>
+                            <span className="text-primary">{req.bloodGroup}</span>
+                          </div>
+                          <div>
+                            <p className="font-semibold text-foreground text-sm">{req.hospital || "No hospital"}</p>
+                            <p className="text-xs text-muted-foreground">{req.city}</p>
+                          </div>
                         </div>
-                        <div>
-                          <p className="font-semibold text-foreground text-sm">{r.donorName}</p>
-                          <p className="text-xs text-muted-foreground">{r.donorCity}</p>
+                        <div className="flex flex-col items-end gap-1.5 shrink-0">
+                          <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border flex items-center gap-1.5 ${uc.badge}`}>
+                            <span className={`w-1.5 h-1.5 rounded-full ${uc.dot} ${req.urgency === "Critical" ? "animate-pulse" : ""}`} />
+                            {req.urgency}
+                          </span>
+                          <span className="text-xs text-muted-foreground">{timeAgo(req.createdAt)}</span>
                         </div>
                       </div>
-                      <span className="text-xs text-muted-foreground shrink-0">{timeAgo(r.createdAt)}</span>
+                      {req.reason && <p className="text-xs text-muted-foreground mb-3 line-clamp-2">{req.reason}</p>}
+                      <div className="border-t border-border pt-3 flex items-center justify-between">
+                        <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${req.status === "open" ? "bg-blue-50 text-blue-700 border-blue-200" : "bg-green-50 text-green-700 border-green-200"}`}>
+                          {req.status === "open" ? "Active" : "Fulfilled"}
+                        </span>
+                        <span className="text-xs text-muted-foreground">{req.responseCount} donor{req.responseCount !== 1 ? "s" : ""} responded</span>
+                      </div>
                     </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
 
-                    {!isDonor && (
-                      <>
+        {/* Activity tab — two sections */}
+        {tab === "activity" && (
+          <div className="space-y-8">
+            <button onClick={loadAllData} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground ml-auto">
+              <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} /> Refresh
+            </button>
+
+            {/* Section A: My donation activity */}
+            <section>
+              <div className="flex items-center gap-2 mb-3">
+                <Heart className="w-4 h-4 text-primary" />
+                <h3 className="font-display font-bold text-foreground text-sm">My Donation Responses</h3>
+                <span className="text-xs text-muted-foreground">({myDonationResponses.length})</span>
+              </div>
+              {loading ? (
+                <div className="flex items-center justify-center py-10 gap-2 text-muted-foreground"><Spinner /><span className="text-sm">Loading…</span></div>
+              ) : myDonationResponses.length === 0 ? (
+                <div className="bg-card border border-border rounded-lg p-6 text-center text-muted-foreground">
+                  <Activity className="w-8 h-8 mx-auto mb-2 opacity-30" />
+                  <p className="text-sm">No donations yet. Go to Donate Blood to start helping.</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {myDonationResponses.map(r => (
+                    <div key={r.id} className="bg-card border border-border rounded-lg p-4">
+                      <div className="flex items-start justify-between gap-3 mb-2">
+                        <div className="flex items-center gap-3">
+                          <div className="w-9 h-9 rounded-md bg-accent border border-primary/20 flex items-center justify-center font-display font-extrabold text-xs text-primary">
+                            {r.donorBloodGroup}
+                          </div>
+                          <div>
+                            <p className="font-semibold text-foreground text-sm">Offered to donate to {r.takerName ?? "a recipient"}</p>
+                            <p className="text-xs text-muted-foreground">{timeAgo(r.createdAt)}</p>
+                          </div>
+                        </div>
+                      </div>
+                      {r.message && <p className="text-xs text-foreground/60 italic bg-accent/50 rounded px-3 py-2">"{r.message}"</p>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            {/* Section B: Donors who responded to my requests */}
+            <section>
+              <div className="flex items-center gap-2 mb-3">
+                <Users className="w-4 h-4 text-primary" />
+                <h3 className="font-display font-bold text-foreground text-sm">Donors Responding to My Requests</h3>
+                <span className="text-xs text-muted-foreground">({requestResponses.length})</span>
+              </div>
+              {loading ? (
+                <div className="flex items-center justify-center py-10 gap-2 text-muted-foreground"><Spinner /><span className="text-sm">Loading…</span></div>
+              ) : requestResponses.length === 0 ? (
+                <div className="bg-card border border-border rounded-lg p-6 text-center text-muted-foreground">
+                  <MessageCircle className="w-8 h-8 mx-auto mb-2 opacity-30" />
+                  <p className="text-sm">No donors have responded to your requests yet.</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {requestResponses.map(r => {
+                    const alreadyFulfilled = fulfilledResponseIds.has(r.id);
+                    const parentRequest = myRequests.find(req => req.id === r.requestId);
+                    return (
+                      <div key={r.id} className="bg-card border border-border rounded-lg p-4 hover:border-primary/30 transition-colors">
+                        <div className="flex items-start justify-between gap-3 mb-3">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-md bg-accent border border-primary/20 flex items-center justify-center font-display font-extrabold text-sm text-primary">
+                              {r.donorBloodGroup}
+                            </div>
+                            <div>
+                              <p className="font-semibold text-foreground text-sm">{r.donorName}</p>
+                              <p className="text-xs text-muted-foreground">{r.donorCity}</p>
+                            </div>
+                          </div>
+                          <span className="text-xs text-muted-foreground shrink-0">{timeAgo(r.createdAt)}</span>
+                        </div>
                         <div className="bg-secondary rounded-md p-3 space-y-1.5 mb-3">
                           <div className="flex items-center gap-2 text-sm text-foreground">
                             <Phone className="w-3.5 h-3.5 text-primary/60" />
@@ -1489,38 +1787,24 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
                             <a href={`mailto:${r.donorEmail}`} className="hover:text-primary transition-colors font-medium">{r.donorEmail}</a>
                           </div>
                         </div>
-                        {/* Find which request this response belongs to */}
-                        {(() => {
-                          const parentRequest = myRequests.find(req => req.id === r.requestId);
-                          const alreadyFulfilled = fulfilledResponseIds.has(r.id);
-                          return parentRequest && parentRequest.status !== "fulfilled" && !alreadyFulfilled ? (
-                            <button
-                              onClick={() => setFulfillTarget({ response: r, requestId: r.requestId })}
-                              className="w-full mt-1 flex items-center justify-center gap-2 bg-green-600 text-white py-2 rounded-md text-sm font-semibold hover:bg-green-700 transition-colors">
-                              <CheckCircle className="w-4 h-4" /> Mark Donation as Complete
-                            </button>
-                          ) : alreadyFulfilled ? (
-                            <div className="mt-1 flex items-center gap-2 text-green-700 text-xs font-semibold bg-green-50 border border-green-200 rounded-md px-3 py-2">
-                              <CheckCircle className="w-3.5 h-3.5" /> Donation confirmed complete
-                            </div>
-                          ) : null;
-                        })()}
-                      </>
-                    )}
-
-                    {isDonor && (
-                      <div className="bg-secondary rounded-md px-3 py-2 mb-3 text-xs text-muted-foreground">
-                        You offered to donate <span className="font-semibold text-foreground">{r.donorBloodGroup}</span> blood
+                        {r.message && <p className="text-xs text-foreground/60 italic bg-accent/50 rounded px-3 py-2 mb-3">"{r.message}"</p>}
+                        {parentRequest && parentRequest.status !== "fulfilled" && !alreadyFulfilled ? (
+                          <button
+                            onClick={() => setFulfillTarget({ response: r, requestId: r.requestId })}
+                            className="w-full flex items-center justify-center gap-2 bg-green-600 text-white py-2 rounded-md text-sm font-semibold hover:bg-green-700 transition-colors">
+                            <CheckCircle className="w-4 h-4" /> Mark Donation as Complete
+                          </button>
+                        ) : alreadyFulfilled ? (
+                          <div className="flex items-center gap-2 text-green-700 text-xs font-semibold bg-green-50 border border-green-200 rounded-md px-3 py-2">
+                            <CheckCircle className="w-3.5 h-3.5" /> Donation confirmed complete
+                          </div>
+                        ) : null}
                       </div>
-                    )}
-
-                    {r.message && (
-                      <p className="text-xs text-foreground/60 italic bg-accent/50 rounded px-3 py-2">"{r.message}"</p>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
+                    );
+                  })}
+                </div>
+              )}
+            </section>
           </div>
         )}
 
@@ -1529,100 +1813,85 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
           <div>
             <div className="flex items-center justify-between mb-5">
               <div>
-                <h3 className="font-display font-bold text-foreground">
-                  {isDonor ? "Donation History" : "Request History"}
-                </h3>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  {isDonor ? "All confirmed donations you have made." : "All completed blood requests."}
-                </p>
+                <h3 className="font-display font-bold text-foreground">Donation History</h3>
+                <p className="text-xs text-muted-foreground mt-0.5">All confirmed donations you were part of.</p>
               </div>
               <button onClick={loadHistory} className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-secondary rounded-md transition-colors">
                 <RefreshCw className={`w-4 h-4 ${historyLoading ? "animate-spin" : ""}`} />
               </button>
             </div>
-
             {historyLoading ? (
-              <div className="flex items-center justify-center py-16 gap-2 text-muted-foreground">
-                <Spinner /><span className="text-sm">Loading history…</span>
-              </div>
+              <div className="flex items-center justify-center py-16 gap-2 text-muted-foreground"><Spinner /><span className="text-sm">Loading history…</span></div>
             ) : history.length === 0 ? (
               <div className="text-center py-16 text-muted-foreground">
                 <Calendar className="w-10 h-10 mx-auto mb-3 opacity-30" />
                 <p className="text-sm font-medium">No history yet.</p>
-                <p className="text-xs mt-1 opacity-70">
-                  {isDonor ? "Completed donations will appear here once a taker confirms." : "Mark a donor response as complete to add it to history."}
-                </p>
+                <p className="text-xs mt-1 opacity-70">Completed donations will appear here once confirmed.</p>
               </div>
             ) : (
               <div className="space-y-3">
-                {history.map(rec => (
-                  <div key={rec.id} className="bg-card border border-green-200 rounded-lg overflow-hidden">
-                    {/* Header strip */}
-                    <div className="bg-green-50 px-4 py-2 flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <CheckCircle className="w-4 h-4 text-green-600" />
-                        <span className="text-xs font-semibold text-green-700">Donation Completed</span>
+                {history.map(rec => {
+                  const asDonor = rec.donorId === profile.id;
+                  return (
+                    <div key={rec.id} className="bg-card border border-green-200 rounded-lg overflow-hidden">
+                      <div className="bg-green-50 px-4 py-2 flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <CheckCircle className="w-4 h-4 text-green-600" />
+                          <span className="text-xs font-semibold text-green-700">
+                            {asDonor ? "You donated" : "You received"}
+                          </span>
+                        </div>
+                        <span className="text-xs text-muted-foreground">{formatDate(rec.completedAt)}</span>
                       </div>
-                      <span className="text-xs text-muted-foreground">{formatDate(rec.completedAt)}</span>
+                      <div className="p-4">
+                        <div className="flex items-start gap-4 mb-4">
+                          <div className="w-12 h-12 rounded-md bg-accent border border-primary/20 flex items-center justify-center font-display font-extrabold text-lg text-primary shrink-0">
+                            {rec.bloodGroup}
+                          </div>
+                          <div className="flex-1">
+                            {asDonor ? (
+                              <>
+                                <p className="font-semibold text-foreground">Donated to <span className="text-primary">{rec.takerName}</span></p>
+                                <p className="text-sm text-muted-foreground mt-0.5 flex items-center gap-1.5"><MapPin className="w-3 h-3" />{rec.hospital}, {rec.city}</p>
+                              </>
+                            ) : (
+                              <>
+                                <p className="font-semibold text-foreground">Received from <span className="text-primary">{rec.donorName}</span></p>
+                                <p className="text-sm text-muted-foreground mt-0.5 flex items-center gap-1.5"><MapPin className="w-3 h-3" />{rec.hospital}, {rec.city}</p>
+                              </>
+                            )}
+                          </div>
+                          <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border shrink-0 ${URGENCY_COLORS[rec.urgency].badge}`}>{rec.urgency}</span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-3 text-sm mb-3">
+                          <div className="bg-secondary rounded-md p-3">
+                            <p className="text-xs text-muted-foreground mb-1">Donor</p>
+                            <p className="font-semibold text-foreground">{rec.donorName}</p>
+                            <p className="text-xs text-muted-foreground">{rec.donorBloodGroup} · {rec.donorCity}</p>
+                            <a href={`tel:${rec.donorPhone}`} className="text-xs text-primary hover:underline mt-0.5 block">{rec.donorPhone}</a>
+                          </div>
+                          <div className="bg-secondary rounded-md p-3">
+                            <p className="text-xs text-muted-foreground mb-1">Request Details</p>
+                            <p className="font-semibold text-foreground">{rec.unitsRequired} unit{rec.unitsRequired > 1 ? "s" : ""} of {rec.bloodGroup}</p>
+                            <p className="text-xs text-muted-foreground">Requested {formatDate(rec.requestCreatedAt)}</p>
+                            <p className="text-xs text-muted-foreground">Fulfilled {formatDate(rec.completedAt)}</p>
+                          </div>
+                        </div>
+                        {rec.notes && (
+                          <div className="bg-accent/60 rounded-md px-3 py-2 text-xs text-foreground/70 italic flex gap-2">
+                            <MessageCircle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-primary/50" />
+                            "{rec.notes}"
+                          </div>
+                        )}
+                      </div>
                     </div>
-
-                    <div className="p-4">
-                      <div className="flex items-start gap-4 mb-4">
-                        <div className="w-12 h-12 rounded-md bg-accent border border-primary/20 flex items-center justify-center font-display font-extrabold text-lg text-primary shrink-0">
-                          {rec.bloodGroup}
-                        </div>
-                        <div className="flex-1">
-                          {isDonor ? (
-                            <>
-                              <p className="font-semibold text-foreground">Donated to <span className="text-primary">{rec.takerName}</span></p>
-                              <p className="text-sm text-muted-foreground mt-0.5 flex items-center gap-1.5">
-                                <MapPin className="w-3 h-3" />{rec.hospital}, {rec.city}
-                              </p>
-                            </>
-                          ) : (
-                            <>
-                              <p className="font-semibold text-foreground">Received from <span className="text-primary">{rec.donorName}</span></p>
-                              <p className="text-sm text-muted-foreground mt-0.5 flex items-center gap-1.5">
-                                <MapPin className="w-3 h-3" />{rec.hospital}, {rec.city}
-                              </p>
-                            </>
-                          )}
-                        </div>
-                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border shrink-0 ${URGENCY_COLORS[rec.urgency].badge}`}>
-                          {rec.urgency}
-                        </span>
-                      </div>
-
-                      {/* Details grid */}
-                      <div className="grid grid-cols-2 gap-3 text-sm mb-3">
-                        <div className="bg-secondary rounded-md p-3">
-                          <p className="text-xs text-muted-foreground mb-1">Donor</p>
-                          <p className="font-semibold text-foreground">{rec.donorName}</p>
-                          <p className="text-xs text-muted-foreground">{rec.donorBloodGroup} · {rec.donorCity}</p>
-                          <a href={`tel:${rec.donorPhone}`} className="text-xs text-primary hover:underline mt-0.5 block">{rec.donorPhone}</a>
-                        </div>
-                        <div className="bg-secondary rounded-md p-3">
-                          <p className="text-xs text-muted-foreground mb-1">Request Details</p>
-                          <p className="font-semibold text-foreground">{rec.unitsRequired} unit{rec.unitsRequired > 1 ? "s" : ""} of {rec.bloodGroup}</p>
-                          <p className="text-xs text-muted-foreground">Requested {formatDate(rec.requestCreatedAt)}</p>
-                          <p className="text-xs text-muted-foreground">Fulfilled {formatDate(rec.completedAt)}</p>
-                        </div>
-                      </div>
-
-                      {rec.notes && (
-                        <div className="bg-accent/60 rounded-md px-3 py-2 text-xs text-foreground/70 italic flex gap-2">
-                          <MessageCircle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-primary/50" />
-                          "{rec.notes}"
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
         )}
-      </div> {/* end flex-1 content */}
+      </div>
 
       {respondTarget && (
         <RespondModal request={respondTarget} profile={profile}
@@ -1638,7 +1907,7 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
           onSuccess={() => {
             setFulfilledResponseIds(prev => new Set([...prev, fulfillTarget.response.id]));
             setFulfillTarget(null);
-            loadTakerData();
+            loadAllData();
             loadHistory();
           }}
         />
@@ -1646,24 +1915,41 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
 
       {showDonationWarning && pendingRespondTarget && (
         <DonationWarningModal
-          lastDonationDate={profile.lastDonationDate!}
-          onClose={() => { setShowDonationWarning(false); setPendingRespondTarget(null); }}
-          onProceed={() => {
-            setShowDonationWarning(false);
-            setRespondTarget(pendingRespondTarget);
-            setPendingRespondTarget(null);
-          }}
+          daysLeft={donorEligibility(localProfile.lastDonationDate).daysLeft}
+          daysSinceLast={donorEligibility(localProfile.lastDonationDate).daysSinceLast}
+          onCancel={() => { setShowDonationWarning(false); setPendingRespondTarget(null); }}
+          onProceed={() => { setShowDonationWarning(false); setRespondTarget(pendingRespondTarget); setPendingRespondTarget(null); }}
         />
       )}
 
       {showNewRequest && (
         <NewRequestModal
-          profile={profile}
+          profile={localProfile}
           onClose={() => setShowNewRequest(false)}
-          onSuccess={(req) => {
-            setMyRequests(prev => [req, ...prev]);
-            setShowNewRequest(false);
-          }}
+          onSuccess={(req) => { setMyRequests(prev => [req, ...prev]); setShowNewRequest(false); }}
+        />
+      )}
+
+      {showEditProfile && (
+        <EditProfileModal
+          profile={localProfile}
+          onClose={() => setShowEditProfile(false)}
+          onSuccess={(updated) => { setLocalProfile(updated); setShowEditProfile(false); }}
+        />
+      )}
+
+      {showChangeName && (
+        <ChangeNameModal
+          profile={localProfile}
+          onClose={() => setShowChangeName(false)}
+          onSuccess={(updated) => { setLocalProfile(updated); setShowChangeName(false); }}
+        />
+      )}
+
+      {showChangePassword && (
+        <ChangePasswordModal
+          profile={localProfile}
+          onClose={() => setShowChangePassword(false)}
         />
       )}
     </div>
@@ -1748,6 +2034,11 @@ function AdminPanel({ onLogout }: { onLogout: () => void }) {
   const [expandedUser, setExpandedUser] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [showCredentials, setShowCredentials] = useState(false);
+  const [credForm, setCredForm] = useState({ currentPassword: "", newUsername: "", newPassword: "", confirmPassword: "" });
+  const [credError, setCredError] = useState("");
+  const [credDone, setCredDone] = useState(false);
+  const [credLoading, setCredLoading] = useState(false);
 
   const loadStats = useCallback(async () => {
     const s = await api("/admin/stats");
@@ -1825,9 +2116,15 @@ function AdminPanel({ onLogout }: { onLogout: () => void }) {
             <span className="ml-2 text-xs bg-primary text-primary-foreground px-2 py-0.5 rounded font-semibold">Admin</span>
           </div>
         </div>
-        <button onClick={onLogout} className="text-sm text-background/60 hover:text-background transition-colors font-medium flex items-center gap-1.5">
-          <LogIn className="w-4 h-4 rotate-180" /> Sign out
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={() => { setShowCredentials(true); setCredDone(false); setCredError(""); setCredForm({ currentPassword: "", newUsername: "", newPassword: "", confirmPassword: "" }); }}
+            className="text-sm text-background/60 hover:text-background transition-colors font-medium flex items-center gap-1.5">
+            <Lock className="w-4 h-4" /> Credentials
+          </button>
+          <button onClick={onLogout} className="text-sm text-background/60 hover:text-background transition-colors font-medium flex items-center gap-1.5">
+            <LogIn className="w-4 h-4 rotate-180" /> Sign out
+          </button>
+        </div>
       </header>
 
       <div className="flex flex-col md:flex-row flex-1">
@@ -2079,6 +2376,79 @@ function AdminPanel({ onLogout }: { onLogout: () => void }) {
           )}
         </main>
       </div>
+
+      {/* Admin Credentials Modal */}
+      {showCredentials && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-card rounded-xl shadow-xl w-full max-w-sm p-6">
+            <div className="flex items-center justify-between mb-5">
+              <h3 className="font-display font-bold text-foreground flex items-center gap-2">
+                <Lock className="w-4 h-4 text-primary" /> Admin Credentials
+              </h3>
+              <button onClick={() => setShowCredentials(false)} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+            </div>
+            {credDone ? (
+              <div className="text-center py-6">
+                <CheckCircle className="w-10 h-10 text-green-600 mx-auto mb-3" />
+                <p className="font-semibold text-foreground">Credentials updated!</p>
+                <p className="text-xs text-muted-foreground mt-1 mb-4">Use the new credentials next time you log in.</p>
+                <button onClick={() => setShowCredentials(false)}
+                  className="w-full bg-primary text-primary-foreground py-2.5 rounded-md font-semibold text-sm hover:bg-primary/90 transition-colors">Done</button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div>
+                  <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Current Password</label>
+                  <div className="relative mt-1">
+                    <input type="password" value={credForm.currentPassword}
+                      onChange={e => setCredForm(f => ({ ...f, currentPassword: e.target.value }))}
+                      className="w-full px-3 py-2 rounded-md bg-input-background border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
+                  </div>
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">New Username <span className="text-muted-foreground font-normal normal-case">(leave blank to keep)</span></label>
+                  <input value={credForm.newUsername}
+                    onChange={e => setCredForm(f => ({ ...f, newUsername: e.target.value }))}
+                    className="w-full mt-1 px-3 py-2 rounded-md bg-input-background border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">New Password <span className="text-muted-foreground font-normal normal-case">(leave blank to keep)</span></label>
+                  <input type="password" value={credForm.newPassword}
+                    onChange={e => setCredForm(f => ({ ...f, newPassword: e.target.value }))}
+                    className="w-full mt-1 px-3 py-2 rounded-md bg-input-background border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
+                </div>
+                {credForm.newPassword && (
+                  <div>
+                    <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Confirm New Password</label>
+                    <input type="password" value={credForm.confirmPassword}
+                      onChange={e => setCredForm(f => ({ ...f, confirmPassword: e.target.value }))}
+                      className="w-full mt-1 px-3 py-2 rounded-md bg-input-background border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
+                  </div>
+                )}
+                {credError && <p className="text-xs text-destructive">{credError}</p>}
+                <button disabled={credLoading} onClick={async () => {
+                  if (!credForm.currentPassword) { setCredError("Current password is required."); return; }
+                  if (credForm.newPassword && credForm.newPassword !== credForm.confirmPassword) { setCredError("Passwords do not match."); return; }
+                  if (credForm.newPassword && credForm.newPassword.length < 6) { setCredError("New password must be at least 6 characters."); return; }
+                  setCredLoading(true); setCredError("");
+                  try {
+                    const data = await api("/admin/credentials", {
+                      method: "PUT",
+                      body: JSON.stringify({ currentPassword: credForm.currentPassword, newUsername: credForm.newUsername || undefined, newPassword: credForm.newPassword || undefined }),
+                    });
+                    if (data.error) { setCredError(data.error); return; }
+                    setCredDone(true);
+                  } catch { setCredError("Something went wrong."); }
+                  finally { setCredLoading(false); }
+                }}
+                  className="w-full bg-primary text-primary-foreground py-2.5 rounded-md font-semibold text-sm hover:bg-primary/90 transition-colors disabled:opacity-60 flex items-center justify-center gap-2">
+                  {credLoading ? <><Spinner /> Saving…</> : "Update Credentials"}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
