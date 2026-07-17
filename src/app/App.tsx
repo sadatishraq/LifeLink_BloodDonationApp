@@ -4,7 +4,8 @@ import {
   AlertCircle, ChevronRight, ArrowLeft, CheckCircle, Plus,
   Activity, RefreshCw, MessageCircle, X, Send, Loader2,
   Lock, Eye, EyeOff, LogIn, UserPlus, Shield,
-  LayoutDashboard, Users, ClipboardList, Trash2, Ban, CircleCheck, ChevronDown, ChevronUp
+  LayoutDashboard, Users, ClipboardList, Trash2, Ban, CircleCheck, ChevronDown, ChevronUp,
+  XCircle, AlertTriangle, Star, Award, Sparkles
 } from "lucide-react";
 
 // ── Config ────────────────────────────────────────────────────────────────
@@ -73,7 +74,7 @@ interface HistoryRecord {
   requestCreatedAt: string;
   role: "donor" | "taker";
 }
-type Gender = "Male" | "Female" | "Other" | "Prefer not to say";
+type Gender = "Male" | "Female";
 type UrgencyLevel = "Critical" | "High" | "Moderate" | "Low";
 
 interface Profile {
@@ -91,12 +92,9 @@ interface Profile {
   city: string;
   state: string;
   lastDonationDate?: string;
+  donationCount?: number;
   medicalConditions?: string;
   availableTodonate?: boolean;
-  urgency?: UrgencyLevel;
-  hospital?: string;
-  unitsRequired?: number;
-  reason?: string;
   createdAt: string;
 }
 
@@ -104,6 +102,7 @@ interface BloodRequest {
   id: string;
   takerId: string;
   takerName: string;
+  patientName?: string;
   bloodGroup: BloodGroup;
   urgency: UrgencyLevel;
   hospital: string;
@@ -129,9 +128,29 @@ interface DonorResponse {
   createdAt: string;
 }
 
+interface ChatMessage {
+  id: string;
+  requestId: string;
+  senderId: string;
+  senderName: string;
+  text: string;
+  createdAt: string;
+}
+
+interface DonorRating {
+  id: string;
+  donorId: string;
+  requestId: string;
+  takerId: string;
+  takerName: string;
+  stars: number;
+  note: string;
+  createdAt: string;
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────
 const BLOOD_GROUPS: BloodGroup[] = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"];
-const GENDERS: Gender[] = ["Male", "Female", "Other", "Prefer not to say"];
+const GENDERS: Gender[] = ["Male", "Female"];
 const URGENCY_LEVELS: UrgencyLevel[] = ["Critical", "High", "Moderate", "Low"];
 
 const URGENCY_COLORS: Record<UrgencyLevel, { card: string; badge: string; dot: string }> = {
@@ -312,8 +331,10 @@ function LoginScreen({ onBack, onSuccess, onGoRegister }: {
       onSuccess(profile);
     } catch (e: any) {
       const msg = e.message ?? "";
-      if (msg.includes("No account found")) {
-        setError("No account found with this email. Please create a new account — existing accounts registered before the latest update need to be re-created.");
+      if (msg.includes("needs re-registration")) {
+        setError("This account was created before our login system was set up. Please create a new account with the same email.");
+      } else if (msg.includes("No account found")) {
+        setError("No account found with this email. Please check the email or create a new account.");
       } else if (msg.includes("Incorrect password")) {
         setError("Incorrect password. Please try again.");
       } else {
@@ -710,7 +731,20 @@ function RegisterScreen({ onBack, onComplete, onGoLogin }: {
 
         <div className="mt-10">
           {step < totalSteps ? (
-            <PrimaryBtn onClick={() => { setError(""); setStep(s => s + 1); }}>
+            <PrimaryBtn loading={saving} onClick={async () => {
+              setError("");
+              if (step === 2) {
+                if (!form.email || !form.password) { setError("Email and password are required."); return; }
+                if (form.password.length < 6) { setError("Password must be at least 6 characters."); return; }
+                setSaving(true);
+                try {
+                  const { taken } = await api(`/auth/check-email?email=${encodeURIComponent(form.email)}`);
+                  if (taken) { setError("An account with this email already exists. Please log in instead."); return; }
+                } catch { /* silent — let server catch it at submit */ }
+                finally { setSaving(false); }
+              }
+              setStep(s => s + 1);
+            }}>
               Continue <ChevronRight className="w-4 h-4" />
             </PrimaryBtn>
           ) : (
@@ -765,7 +799,7 @@ function RespondModal({ request, profile, onClose, onSuccess }: {
               <span className="font-display font-extrabold text-xl text-primary">{request.bloodGroup}</span>
               <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${uc.badge}`}>{request.urgency}</span>
             </div>
-            <p className="text-sm font-semibold text-foreground">{request.takerName}</p>
+            <p className="text-sm font-semibold text-foreground">{request.patientName || request.takerName}</p>
             <p className="text-xs text-muted-foreground mt-0.5">{request.hospital} · {request.city} · {request.unitsRequired} unit{request.unitsRequired > 1 ? "s" : ""}</p>
           </div>
 
@@ -860,18 +894,21 @@ function NewRequestModal({ profile, onClose, onSuccess }: {
   profile: Profile; onClose: () => void; onSuccess: (req: BloodRequest) => void;
 }) {
   const [form, setForm] = useState({
+    bloodGroup: profile.bloodGroup as BloodGroup,
+    patientName: `${profile.firstName} ${profile.lastName}`,
     urgency: "Moderate" as UrgencyLevel,
-    hospital: profile.hospital ?? "",
+    hospital: "",
     city: profile.city,
     unitsRequired: "1",
     reason: "",
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const set = (k: keyof typeof form) => (v: string) => setForm(f => ({ ...f, [k]: v }));
+  const set = (k: keyof typeof form) => (v: any) => setForm(f => ({ ...f, [k]: v }));
 
   const handleSubmit = async () => {
     if (!form.hospital || !form.city) { setError("Hospital and city are required."); return; }
+    if (!form.patientName.trim()) { setError("Patient name is required."); return; }
     setSaving(true); setError("");
     try {
       const { request } = await api("/requests", {
@@ -879,7 +916,8 @@ function NewRequestModal({ profile, onClose, onSuccess }: {
         body: JSON.stringify({
           takerId: profile.id,
           takerName: `${profile.firstName} ${profile.lastName}`,
-          bloodGroup: profile.bloodGroup,
+          patientName: form.patientName.trim(),
+          bloodGroup: form.bloodGroup,
           urgency: form.urgency,
           hospital: form.hospital,
           city: form.city,
@@ -899,12 +937,20 @@ function NewRequestModal({ profile, onClose, onSuccess }: {
         <div className="flex items-center justify-between px-5 py-4 border-b border-border sticky top-0 bg-card">
           <div>
             <h2 className="font-display font-bold text-foreground">New Blood Request</h2>
-            <p className="text-xs text-muted-foreground mt-0.5">Blood group: <span className="font-bold text-primary">{profile.bloodGroup}</span></p>
+            <p className="text-xs text-muted-foreground mt-0.5">Fill in the details for the patient who needs blood</p>
           </div>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
         </div>
         <div className="p-5 flex flex-col gap-4">
           {error && <ErrorBox message={error} />}
+
+          <FormField label="Patient Name" required hint="Who needs the blood?">
+            <TextInput placeholder="e.g. John Doe (or your own name)" value={form.patientName} onChange={set("patientName")} />
+          </FormField>
+
+          <FormField label="Blood Group Required" required>
+            <BloodGroupSelector value={form.bloodGroup} onChange={set("bloodGroup")} />
+          </FormField>
 
           <FormField label="Urgency Level" required>
             <div className="grid grid-cols-2 gap-2">
@@ -945,6 +991,59 @@ function NewRequestModal({ profile, onClose, onSuccess }: {
           <PrimaryBtn loading={saving} onClick={handleSubmit}>
             <Plus className="w-4 h-4" /> Post Request
           </PrimaryBtn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Cancel Request Modal ──────────────────────────────────────────────────
+function CancelRequestModal({ request, profile, onClose, onSuccess }: {
+  request: BloodRequest; profile: Profile; onClose: () => void; onSuccess: () => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleCancel = async () => {
+    setSaving(true); setError("");
+    try {
+      await api(`/requests/${request.id}/cancel`, {
+        method: "POST",
+        body: JSON.stringify({ takerId: profile.id }),
+      });
+      onSuccess();
+    } catch (e: any) {
+      setError(e.message ?? "Failed to cancel request.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-end sm:items-center justify-center z-50 p-4">
+      <div className="bg-card rounded-xl w-full max-w-md shadow-2xl border border-border">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+          <h2 className="font-display font-bold text-foreground">Cancel Blood Request</h2>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="p-5 space-y-4">
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 flex gap-3">
+            <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-semibold text-amber-800">Are you sure?</p>
+              <p className="text-xs text-amber-700 mt-1">
+                This will close the request for <span className="font-semibold">{request.patientName || request.takerName}</span> ({request.bloodGroup}) and no further donors will see it. This cannot be undone.
+              </p>
+            </div>
+          </div>
+          <p className="text-sm text-muted-foreground">If blood has already been arranged from another source, cancelling lets the community know the need has been met.</p>
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          <div className="flex gap-3 pt-1">
+            <button onClick={onClose} className="flex-1 py-2.5 rounded-lg border border-border text-sm font-medium hover:bg-muted transition-colors">Keep Request</button>
+            <button onClick={handleCancel} disabled={saving} className="flex-1 py-2.5 rounded-lg bg-destructive text-destructive-foreground text-sm font-semibold hover:opacity-90 transition-opacity disabled:opacity-50 flex items-center justify-center gap-2">
+              {saving && <Spinner />} Cancel Request
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -1042,10 +1141,6 @@ function EditProfileModal({ profile, onClose, onSuccess }: {
     state: profile.state,
     medicalConditions: profile.medicalConditions ?? "",
     availableTodonate: profile.availableTodonate ?? true,
-    hospital: profile.hospital ?? "",
-    unitsRequired: profile.unitsRequired ?? 1,
-    urgency: profile.urgency ?? "Moderate",
-    reason: profile.reason ?? "",
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -1058,10 +1153,7 @@ function EditProfileModal({ profile, onClose, onSuccess }: {
     }
     setLoading(true); setError("");
     try {
-      const data = await api(`/profiles/${profile.id}`, {
-        method: "PUT",
-        body: JSON.stringify({ ...form, unitsRequired: Number(form.unitsRequired) }),
-      });
+      const data = await api(`/profiles/${profile.id}`, { method: "PUT", body: JSON.stringify(form) });
       if (data.error) { setError(data.error); return; }
       onSuccess(data.profile);
     } catch { setError("Something went wrong."); }
@@ -1070,7 +1162,9 @@ function EditProfileModal({ profile, onClose, onSuccess }: {
 
   const field = (label: string, key: string, type = "text", hint?: string) => (
     <div>
-      <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">{label}{hint && <span className="ml-1 text-muted-foreground font-normal normal-case">{hint}</span>}</label>
+      <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+        {label}{hint && <span className="ml-1 font-normal normal-case text-muted-foreground">{hint}</span>}
+      </label>
       <input type={type} value={(form as any)[key]} onChange={e => set(key, e.target.value)}
         className="w-full mt-1 px-3 py-2 rounded-md bg-input-background border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
     </div>
@@ -1085,19 +1179,16 @@ function EditProfileModal({ profile, onClose, onSuccess }: {
         </div>
 
         <div className="overflow-y-auto px-6 py-4 space-y-4 flex-1">
-          {/* Personal */}
           <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Personal Information</p>
           <div className="grid grid-cols-2 gap-3">
             {field("First Name", "firstName")}
             {field("Last Name", "lastName")}
           </div>
 
-          {/* Contact */}
           <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest pt-2">Contact</p>
           {field("Phone Number", "phone", "tel")}
           {field("Alternative Phone", "altPhone", "tel", "(optional)")}
 
-          {/* Address */}
           <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest pt-2">Address</p>
           {field("Street Address", "address")}
           <div className="grid grid-cols-2 gap-3">
@@ -1105,35 +1196,15 @@ function EditProfileModal({ profile, onClose, onSuccess }: {
             {field("State / Province", "state")}
           </div>
 
-          {/* Donor info */}
           <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest pt-2">Donor Details</p>
           {field("Medical Conditions", "medicalConditions", "text", "(optional)")}
           <div className="flex items-center gap-3">
             <button type="button" onClick={() => set("availableTodonate", !form.availableTodonate)}
-              className={`w-10 h-6 rounded-full transition-colors ${form.availableTodonate ? "bg-primary" : "bg-border"} relative`}>
+              className={`w-10 h-6 rounded-full transition-colors relative ${form.availableTodonate ? "bg-primary" : "bg-border"}`}>
               <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${form.availableTodonate ? "translate-x-4" : "translate-x-0.5"}`} />
             </button>
             <span className="text-sm text-foreground font-medium">Available to donate</span>
           </div>
-
-          {/* Requester info */}
-          <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest pt-2">Request Details</p>
-          {field("Hospital / Clinic", "hospital", "text", "(if requesting blood)")}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Units Required</label>
-              <input type="number" min={1} max={10} value={form.unitsRequired} onChange={e => set("unitsRequired", e.target.value)}
-                className="w-full mt-1 px-3 py-2 rounded-md bg-input-background border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
-            </div>
-            <div>
-              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Urgency</label>
-              <select value={form.urgency} onChange={e => set("urgency", e.target.value)}
-                className="w-full mt-1 px-3 py-2 rounded-md bg-input-background border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary">
-                {["Critical", "High", "Moderate", "Low"].map(u => <option key={u}>{u}</option>)}
-              </select>
-            </div>
-          </div>
-          {field("Reason / Medical Notes", "reason", "text", "(optional)")}
         </div>
 
         <div className="px-6 py-4 border-t border-border shrink-0 space-y-2">
@@ -1271,9 +1342,210 @@ function ChangePasswordModal({ profile, onClose }: { profile: Profile; onClose: 
   );
 }
 
+// ── Chat Modal ────────────────────────────────────────────────────────────
+function ChatModal({ requestId, currentUserId, currentUserName, otherName, onClose }: {
+  requestId: string; currentUserId: string; currentUserName: string; otherName: string; onClose: () => void;
+}) {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  const loadMessages = useCallback(async () => {
+    try {
+      const { messages: msgs } = await api(`/chat/${requestId}`);
+      setMessages(msgs ?? []);
+    } catch { /* silent */ }
+  }, [requestId]);
+
+  useEffect(() => { loadMessages(); }, [loadMessages]);
+  useEffect(() => { const t = setInterval(loadMessages, 5000); return () => clearInterval(t); }, [loadMessages]);
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+
+  const send = async () => {
+    if (!text.trim()) return;
+    setSending(true);
+    try {
+      await api(`/chat/${requestId}`, {
+        method: "POST",
+        body: JSON.stringify({ senderId: currentUserId, senderName: currentUserName, text }),
+      });
+      setText("");
+      await loadMessages();
+    } catch { /* silent */ } finally { setSending(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-end sm:items-center justify-center z-50 p-4">
+      <div className="bg-card rounded-xl w-full max-w-md shadow-2xl border border-border flex flex-col" style={{ maxHeight: "80vh" }}>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
+          <div>
+            <h2 className="font-display font-bold text-foreground">Chat</h2>
+            <p className="text-xs text-muted-foreground">with {otherName}</p>
+          </div>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-0">
+          {messages.length === 0 ? (
+            <p className="text-center text-xs text-muted-foreground py-8">No messages yet. Start the conversation!</p>
+          ) : messages.map(m => {
+            const mine = m.senderId === currentUserId;
+            return (
+              <div key={m.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
+                <div className={`max-w-[75%] rounded-xl px-3.5 py-2.5 text-sm ${mine ? "bg-primary text-primary-foreground rounded-br-sm" : "bg-secondary text-foreground rounded-bl-sm"}`}>
+                  {!mine && <p className="text-[10px] font-semibold opacity-70 mb-0.5">{m.senderName}</p>}
+                  <p className="leading-relaxed">{m.text}</p>
+                  <p className={`text-[10px] mt-1 ${mine ? "text-primary-foreground/60 text-right" : "text-muted-foreground"}`}>{timeAgo(m.createdAt)}</p>
+                </div>
+              </div>
+            );
+          })}
+          <div ref={bottomRef} />
+        </div>
+        <div className="px-4 py-3 border-t border-border shrink-0 flex gap-2">
+          <input
+            value={text} onChange={e => setText(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+            placeholder="Type a message…"
+            className="flex-1 px-3.5 py-2.5 bg-input-background border border-border rounded-lg text-sm text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-2 focus:ring-ring/40 focus:border-primary transition-all"
+          />
+          <button onClick={send} disabled={sending || !text.trim()}
+            className="bg-primary text-primary-foreground px-3.5 py-2.5 rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50">
+            {sending ? <Spinner /> : <Send className="w-4 h-4" />}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Rating Modal ──────────────────────────────────────────────────────────
+function RatingModal({ donorId, donorName, requestId, takerId, takerName, onClose, onSuccess }: {
+  donorId: string; donorName: string; requestId: string;
+  takerId: string; takerName: string; onClose: () => void; onSuccess: () => void;
+}) {
+  const [stars, setStars] = useState(0);
+  const [hover, setHover] = useState(0);
+  const [note, setNote] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async () => {
+    if (stars === 0) { setError("Please select a star rating."); return; }
+    setSaving(true); setError("");
+    try {
+      await api(`/ratings/${donorId}`, {
+        method: "POST",
+        body: JSON.stringify({ requestId, takerId, takerName, stars, note }),
+      });
+      onSuccess();
+    } catch (e: any) {
+      setError(e.message === "Already rated" ? "You have already rated this donor." : (e.message ?? "Failed to submit rating."));
+    } finally { setSaving(false); }
+  };
+
+  const labels = ["", "Poor", "Fair", "Good", "Great", "Excellent"];
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-end sm:items-center justify-center z-50 p-4">
+      <div className="bg-card rounded-xl w-full max-w-md shadow-2xl border border-border">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+          <h2 className="font-display font-bold text-foreground">Rate Your Donor</h2>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="p-5 space-y-5">
+          <div className="text-center">
+            <div className="w-14 h-14 rounded-full bg-primary/10 text-primary flex items-center justify-center font-display font-bold text-xl mx-auto mb-2">
+              {donorName.split(" ").map(n => n[0]).join("").slice(0, 2)}
+            </div>
+            <p className="font-semibold text-foreground">{donorName}</p>
+            <p className="text-xs text-muted-foreground mt-0.5">How was your experience?</p>
+          </div>
+          <div className="flex justify-center gap-2">
+            {[1, 2, 3, 4, 5].map(s => (
+              <button key={s} onClick={() => setStars(s)} onMouseEnter={() => setHover(s)} onMouseLeave={() => setHover(0)}
+                className="transition-transform hover:scale-110">
+                <Star className={`w-9 h-9 transition-colors ${s <= (hover || stars) ? "text-amber-400 fill-amber-400" : "text-muted-foreground/30"}`} />
+              </button>
+            ))}
+          </div>
+          {(hover || stars) > 0 && (
+            <p className="text-center text-sm font-semibold text-amber-600">{labels[hover || stars]}</p>
+          )}
+          <div>
+            <label className="text-sm font-semibold text-foreground block mb-1.5">Leave a note <span className="font-normal text-muted-foreground">(optional)</span></label>
+            <textarea value={note} onChange={e => setNote(e.target.value)} rows={3} placeholder="Share your experience with this donor…"
+              className="w-full px-3.5 py-2.5 bg-input-background border border-border rounded-md text-sm text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-2 focus:ring-ring/40 focus:border-primary resize-none transition-all" />
+          </div>
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          <div className="flex gap-3">
+            <button onClick={onClose} className="flex-1 py-2.5 rounded-lg border border-border text-sm font-medium hover:bg-muted transition-colors">Skip</button>
+            <button onClick={submit} disabled={saving || stars === 0}
+              className="flex-1 py-2.5 rounded-lg bg-primary text-primary-foreground text-sm font-semibold hover:opacity-90 transition-opacity disabled:opacity-50 flex items-center justify-center gap-2">
+              {saving && <Spinner />} Submit Rating
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Onboarding Modal ──────────────────────────────────────────────────────
+function OnboardingModal({ profile, onDone }: { profile: Profile; onDone: () => void }) {
+  const [step, setStep] = useState(0);
+  const steps = [
+    {
+      icon: <Droplets className="w-10 h-10 text-primary" />,
+      title: "Welcome to LifeLink!",
+      body: `Hi ${profile.firstName}! LifeLink connects blood donors with people in need — fast and directly. You can both donate blood and request it at any time.`,
+    },
+    {
+      icon: <Heart className="w-10 h-10 text-primary" />,
+      title: "Donate Blood",
+      body: "Go to the Donate Blood tab to see requests compatible with your blood group. Respond to a request and the requester will receive your contact details instantly.",
+    },
+    {
+      icon: <MessageCircle className="w-10 h-10 text-primary" />,
+      title: "Request & Coordinate",
+      body: "Need blood? Post a request in the Request Blood tab. Once a donor responds, chat with them directly to arrange the donation. Please remember to at least cover their travel fare — it means a lot.",
+    },
+  ];
+  const current = steps[step];
+  const isLast = step === steps.length - 1;
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-6">
+      <div className="bg-card rounded-2xl w-full max-w-sm shadow-2xl border border-border overflow-hidden">
+        <div className="bg-primary/5 px-6 pt-8 pb-6 text-center">
+          <div className="w-20 h-20 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-4">
+            {current.icon}
+          </div>
+          <h2 className="font-display font-bold text-xl text-foreground">{current.title}</h2>
+        </div>
+        <div className="px-6 py-5">
+          <p className="text-sm text-muted-foreground leading-relaxed text-center">{current.body}</p>
+          <div className="flex justify-center gap-1.5 mt-5 mb-5">
+            {steps.map((_, i) => (
+              <div key={i} className={`h-1.5 rounded-full transition-all ${i === step ? "w-6 bg-primary" : "w-1.5 bg-border"}`} />
+            ))}
+          </div>
+          <button onClick={() => { if (isLast) onDone(); else setStep(s => s + 1); }}
+            className="w-full bg-primary text-primary-foreground py-3 rounded-lg font-semibold text-sm hover:bg-primary/90 transition-colors flex items-center justify-center gap-2">
+            {isLast ? <><Sparkles className="w-4 h-4" /> Get Started</> : <>Next <ChevronRight className="w-4 h-4" /></>}
+          </button>
+          {step > 0 && (
+            <button onClick={() => setStep(s => s - 1)} className="w-full text-center text-xs text-muted-foreground mt-2 py-1 hover:text-foreground transition-colors">Back</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Dashboard ─────────────────────────────────────────────────────────────
 function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: () => void }) {
-  const [tab, setTab] = useState<"profile" | "donate" | "request" | "activity" | "history">("profile");
+  const [tab, setTab] = useState<"donate" | "request" | "activity" | "history">("donate");
   // Donate-side state (this user acting as donor)
   const [compatibleRequests, setCompatibleRequests] = useState<BloodRequest[]>([]);
   const [myDonationResponses, setMyDonationResponses] = useState<DonorResponse[]>([]);
@@ -1292,13 +1564,17 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
   const [historyLoading, setHistoryLoading] = useState(false);
   const [fulfillTarget, setFulfillTarget] = useState<{ response: DonorResponse; requestId: string } | null>(null);
   const [fulfilledResponseIds, setFulfilledResponseIds] = useState<Set<string>>(new Set());
+  const [cancelTarget, setCancelTarget] = useState<BloodRequest | null>(null);
   const [showNewRequest, setShowNewRequest] = useState(false);
   const [showDonationWarning, setShowDonationWarning] = useState(false);
   const [pendingRespondTarget, setPendingRespondTarget] = useState<BloodRequest | null>(null);
-  const [showChangeName, setShowChangeName] = useState(false);
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [showEditProfile, setShowEditProfile] = useState(false);
   const [localProfile, setLocalProfile] = useState(profile);
+  const [chatTarget, setChatTarget] = useState<{ requestId: string; otherName: string } | null>(null);
+  const [ratingTarget, setRatingTarget] = useState<{ donorId: string; donorName: string; requestId: string } | null>(null);
+  const [ratedRequestIds, setRatedRequestIds] = useState<Set<string>>(new Set());
+  const [showOnboarding, setShowOnboarding] = useState(() => !localStorage.getItem(`lifelink_onboarded_${profile.id}`));
 
   const loadAllData = useCallback(async () => {
     setLoading(true);
@@ -1389,8 +1665,9 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
     if (tab === "history") loadHistory();
   }, [tab, loadHistory]);
 
+  const [profileOpen, setProfileOpen] = useState(false);
+
   const tabs = [
-    { key: "profile",  label: "My Profile",    badge: 0 },
     { key: "donate",   label: "Donate Blood",   badge: compatibleRequests.length },
     { key: "request",  label: "Request Blood",  badge: myRequests.length },
     { key: "activity", label: "Activity",       badge: responseBadge },
@@ -1399,22 +1676,16 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
-      <header className="px-6 py-4 border-b border-border bg-card flex items-center justify-between">
+      <header className="px-5 py-3.5 border-b border-border bg-card flex items-center justify-between">
         <div className="flex items-center gap-3">
           <BloodDropIcon className="w-6 h-6 text-primary" />
           <span className="font-display font-bold text-foreground tracking-tight">LifeLink</span>
         </div>
         <div className="flex items-center gap-2">
-          <div className="text-right hidden sm:block">
-            <p className="text-sm font-semibold text-foreground leading-none">{localProfile.firstName} {localProfile.lastName}</p>
-            <p className="text-xs text-muted-foreground mt-0.5">{localProfile.bloodGroup} · Donor &amp; Recipient</p>
-          </div>
           {!notifEnabled && "Notification" in window && Notification.permission !== "denied" && (
-            <button
-              onClick={async () => { const granted = await requestNotificationPermission(); setNotifEnabled(granted); }}
-              className="text-xs bg-accent text-accent-foreground border border-primary/20 px-2.5 py-1.5 rounded-md hover:bg-primary hover:text-primary-foreground transition-colors font-medium flex items-center gap-1.5"
-            >
-              🔔 Enable alerts
+            <button onClick={async () => { const granted = await requestNotificationPermission(); setNotifEnabled(granted); }}
+              className="text-xs bg-accent text-accent-foreground border border-primary/20 px-2.5 py-1.5 rounded-md hover:bg-primary hover:text-primary-foreground transition-colors font-medium flex items-center gap-1.5">
+              🔔 Alerts
             </button>
           )}
           {notifEnabled && (
@@ -1422,27 +1693,125 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
               <CheckCircle className="w-3 h-3" /> Alerts on
             </span>
           )}
-          <button onClick={onLogout}
-            className="text-sm bg-secondary text-foreground border border-border px-3 py-1.5 rounded-md hover:border-primary/30 transition-colors font-medium">
-            Log out
+          {/* Profile avatar button */}
+          <button onClick={async () => {
+            setProfileOpen(true);
+            try {
+              const data = await api(`/profiles/${localProfile.id}`);
+              if (data.profile) setLocalProfile(data.profile);
+            } catch { /* silent */ }
+          }}
+            className="w-9 h-9 rounded-full bg-primary text-primary-foreground flex items-center justify-center font-display font-bold text-sm hover:opacity-90 transition-opacity ring-2 ring-primary/20">
+            {localProfile.firstName[0]}{localProfile.lastName[0]}
           </button>
         </div>
       </header>
 
-      <div className="flex-1 max-w-2xl mx-auto w-full px-4 py-6">
-        {/* Status strip */}
-        <div className="grid grid-cols-3 gap-3 mb-6">
-          {[
-            { icon: <Heart className="w-4 h-4" />,       label: "Blood Group",     val: profile.bloodGroup },
-            { icon: <Droplets className="w-4 h-4" />,    label: "Can Donate To",   val: `${compatibleRequests.length} request${compatibleRequests.length !== 1 ? "s" : ""}` },
-            { icon: <MessageCircle className="w-4 h-4" />, label: "My Requests",   val: `${myRequests.length} posted` },
-          ].map(s => (
-            <div key={s.label} className="bg-card border border-border rounded-lg p-3.5 text-center">
-              <div className="w-7 h-7 rounded-md bg-accent flex items-center justify-center text-primary mx-auto mb-2">{s.icon}</div>
-              <div className="font-display font-bold text-base text-foreground truncate">{s.val}</div>
-              <div className="text-xs text-muted-foreground mt-0.5">{s.label}</div>
+      {/* Profile drawer */}
+      {profileOpen && (
+        <div className="fixed inset-0 z-50 flex justify-end">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setProfileOpen(false)} />
+          <div className="relative bg-card w-full max-w-sm h-full flex flex-col shadow-2xl overflow-hidden">
+            {/* Drawer header */}
+            <div className="px-5 py-4 border-b border-border flex items-center justify-between bg-card shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-primary text-primary-foreground flex items-center justify-center font-display font-bold">
+                  {localProfile.firstName[0]}{localProfile.lastName[0]}
+                </div>
+                <div>
+                  <p className="font-display font-bold text-foreground leading-tight">{localProfile.firstName} {localProfile.lastName}</p>
+                  <p className="text-xs text-muted-foreground">{localProfile.bloodGroup} · Donor &amp; Recipient</p>
+                </div>
+              </div>
+              <button onClick={() => setProfileOpen(false)} className="text-muted-foreground hover:text-foreground p-1">
+                <X className="w-5 h-5" />
+              </button>
             </div>
-          ))}
+
+            {/* Drawer body */}
+            <div className="flex-1 overflow-y-auto px-5 py-4 space-y-1">
+              {[
+                ["Full Name", `${localProfile.firstName} ${localProfile.lastName}`],
+                ["Date of Birth", formatDate(localProfile.dob)],
+                ["Gender", localProfile.gender],
+                ["Blood Group", localProfile.bloodGroup],
+                ["Email", localProfile.email],
+                ["Phone", localProfile.phone],
+                localProfile.altPhone ? ["Alt. Phone", localProfile.altPhone] : null,
+                ["Address", `${localProfile.address}, ${localProfile.city}, ${localProfile.state}`],
+                ["Donations Made", localProfile.donationCount ? `${localProfile.donationCount} donation${localProfile.donationCount !== 1 ? "s" : ""} · Last: ${formatDate(localProfile.lastDonationDate!)}` : "First-time donor"],
+                localProfile.availableTodonate !== undefined ? ["Donor Status", localProfile.availableTodonate ? "Available" : "Not available"] : null,
+                localProfile.medicalConditions ? ["Medical Conditions", localProfile.medicalConditions] : null,
+              ].filter(Boolean).map(([k, v]) => (
+                <div key={k} className="flex items-start justify-between gap-4 py-2.5 border-b border-border last:border-0 text-sm">
+                  <span className="text-muted-foreground shrink-0 w-32">{k}</span>
+                  <span className="text-foreground font-medium text-right">{v}</span>
+                </div>
+              ))}
+            </div>
+
+            {/* Drawer actions */}
+            <div className="px-5 py-4 border-t border-border bg-card shrink-0 space-y-2">
+              <button onClick={() => { setProfileOpen(false); setShowEditProfile(true); }}
+                className="w-full flex items-center justify-between px-4 py-3 rounded-md bg-secondary hover:bg-muted transition-colors text-sm font-medium">
+                Edit Profile Info <ChevronRight className="w-4 h-4 text-muted-foreground" />
+              </button>
+              <button onClick={() => { setProfileOpen(false); setShowChangePassword(true); }}
+                className="w-full flex items-center justify-between px-4 py-3 rounded-md bg-secondary hover:bg-muted transition-colors text-sm font-medium">
+                Change Password <ChevronRight className="w-4 h-4 text-muted-foreground" />
+              </button>
+              <button onClick={onLogout}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-md border border-destructive/30 text-destructive hover:bg-destructive/5 transition-colors text-sm font-semibold">
+                <LogIn className="w-4 h-4 rotate-180" /> Log out
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="flex-1 max-w-2xl mx-auto w-full px-4 py-6">
+        {/* Stats banner */}
+        <div className="bg-card border border-border rounded-xl p-4 mb-6 shadow-sm">
+          <div className="flex items-center gap-2 mb-3">
+            <Award className="w-4 h-4 text-primary" />
+            <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Your Impact</span>
+          </div>
+          <div className="grid grid-cols-4 gap-3">
+            {[
+              {
+                icon: <Heart className="w-4 h-4" />,
+                label: "Blood Group",
+                val: localProfile.bloodGroup,
+                highlight: true,
+              },
+              {
+                icon: <Droplets className="w-4 h-4" />,
+                label: "Donations",
+                val: localProfile.donationCount ?? 0,
+              },
+              {
+                icon: <Sparkles className="w-4 h-4" />,
+                label: "Lives Helped",
+                val: localProfile.donationCount ?? 0,
+              },
+              {
+                icon: <Calendar className="w-4 h-4" />,
+                label: "Last Donated",
+                val: localProfile.lastDonationDate ? `${Math.floor((Date.now() - new Date(localProfile.lastDonationDate).getTime()) / 86400000)}d ago` : "Never",
+              },
+            ].map(s => (
+              <div key={s.label} className={`rounded-lg p-3 text-center ${s.highlight ? "bg-primary/10 border border-primary/20" : "bg-secondary"}`}>
+                <div className={`w-6 h-6 rounded-md flex items-center justify-center mx-auto mb-1.5 ${s.highlight ? "bg-primary text-primary-foreground" : "bg-card text-primary"}`}>{s.icon}</div>
+                <div className={`font-display font-bold text-sm ${s.highlight ? "text-primary" : "text-foreground"}`}>{s.val}</div>
+                <div className="text-[10px] text-muted-foreground mt-0.5 leading-tight">{s.label}</div>
+              </div>
+            ))}
+          </div>
+          {(localProfile.donationCount ?? 0) === 0 && (
+            <p className="text-xs text-muted-foreground text-center mt-3 border-t border-border pt-3">
+              You haven&apos;t donated yet — respond to a request to make your first life-saving impact! 💪
+            </p>
+          )}
         </div>
 
         {/* Tabs */}
@@ -1462,78 +1831,6 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
             </button>
           ))}
         </div>
-
-        {/* Profile tab */}
-        {tab === "profile" && (
-          <div className="space-y-4">
-            <div className="bg-card border border-border rounded-lg p-5">
-              <div className="flex items-start gap-4 mb-4">
-                <div className="w-14 h-14 rounded-md bg-primary text-primary-foreground flex items-center justify-center text-xl font-bold shrink-0">
-                  {localProfile.firstName[0]}{localProfile.lastName[0]}
-                </div>
-                <div className="flex-1">
-                  <h2 className="font-display text-xl font-bold text-foreground">{localProfile.firstName} {localProfile.lastName}</h2>
-                  <p className="text-muted-foreground text-sm">Donor &amp; Recipient</p>
-                  <div className="flex items-center gap-2 mt-1.5">
-                    <span className="font-display font-extrabold text-primary text-lg">{localProfile.bloodGroup}</span>
-                    {localProfile.availableTodonate !== undefined && (
-                      <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${localProfile.availableTodonate ? "bg-green-50 text-green-700 border-green-200" : "bg-secondary text-muted-foreground border-border"}`}>
-                        {localProfile.availableTodonate ? "Available to donate" : "Not available"}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-              <div className="border-t border-border pt-4 space-y-2.5">
-                {[
-                  ["Full Name", `${localProfile.firstName} ${localProfile.lastName}`],
-                  ["Date of Birth", formatDate(localProfile.dob)],
-                  ["Gender", localProfile.gender],
-                  ["Blood Group", localProfile.bloodGroup],
-                  ["Email", localProfile.email],
-                  ["Phone", localProfile.phone],
-                  localProfile.altPhone ? ["Alternative Phone", localProfile.altPhone] : null,
-                  ["Address", `${localProfile.address}, ${localProfile.city}, ${localProfile.state}`],
-                  localProfile.lastDonationDate ? ["Last Donation", formatDate(localProfile.lastDonationDate)] : ["Donation Status", "First-time donor"],
-                  localProfile.medicalConditions ? ["Medical Conditions", localProfile.medicalConditions] : null,
-                  localProfile.hospital ? ["Hospital", localProfile.hospital] : null,
-                  localProfile.unitsRequired ? ["Units Required", `${localProfile.unitsRequired}`] : null,
-                  localProfile.urgency ? ["Urgency Level", localProfile.urgency] : null,
-                  localProfile.reason ? ["Medical Notes", localProfile.reason] : null,
-                ].filter(Boolean).map(([k, v]) => (
-                  <div key={k} className="flex items-start justify-between gap-4 text-sm py-2 border-b border-border last:border-0">
-                    <span className="text-muted-foreground shrink-0">{k}</span>
-                    <span className="text-foreground font-medium text-right">{v}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Account settings */}
-            <div className="bg-card border border-border rounded-lg p-5">
-              <h4 className="font-display font-bold text-foreground mb-4 flex items-center gap-2">
-                <Lock className="w-4 h-4 text-primary" /> Account Settings
-              </h4>
-              <div className="space-y-2">
-                <button onClick={() => setShowEditProfile(true)}
-                  className="w-full flex items-center justify-between px-4 py-3 rounded-md bg-secondary hover:bg-muted transition-colors text-sm">
-                  <span className="font-medium text-foreground">Edit Profile Info</span>
-                  <ChevronRight className="w-4 h-4 text-muted-foreground" />
-                </button>
-                <button onClick={() => setShowChangeName(true)}
-                  className="w-full flex items-center justify-between px-4 py-3 rounded-md bg-secondary hover:bg-muted transition-colors text-sm">
-                  <span className="font-medium text-foreground">Change Name</span>
-                  <ChevronRight className="w-4 h-4 text-muted-foreground" />
-                </button>
-                <button onClick={() => setShowChangePassword(true)}
-                  className="w-full flex items-center justify-between px-4 py-3 rounded-md bg-secondary hover:bg-muted transition-colors text-sm">
-                  <span className="font-medium text-foreground">Change Password</span>
-                  <ChevronRight className="w-4 h-4 text-muted-foreground" />
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* Donate Blood tab */}
         {tab === "donate" && (
@@ -1589,7 +1886,7 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
                             <span className="text-primary">{req.bloodGroup}</span>
                           </div>
                           <div>
-                            <p className="font-semibold text-foreground text-sm">{req.takerName}</p>
+                            <p className="font-semibold text-foreground text-sm">{req.patientName || req.takerName}</p>
                             <p className="text-xs text-muted-foreground">{req.hospital}</p>
                           </div>
                         </div>
@@ -1638,6 +1935,12 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
         {/* Request Blood tab */}
         {tab === "request" && (
           <div>
+            <div className="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 mb-4">
+              <Heart className="w-4 h-4 text-amber-600 shrink-0" />
+              <p className="text-xs text-amber-800 font-medium leading-relaxed">
+                <span className="font-bold uppercase tracking-wide">We encourage you</span> to at least give the donor their travel fare or transport fee as a gesture of gratitude. Every donor gives their time and effort to help you.
+              </p>
+            </div>
             <div className="flex items-center justify-between mb-4">
               <div>
                 <h3 className="font-display font-bold text-foreground">Your Blood Requests</h3>
@@ -1674,8 +1977,8 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
                             <span className="text-primary">{req.bloodGroup}</span>
                           </div>
                           <div>
-                            <p className="font-semibold text-foreground text-sm">{req.hospital || "No hospital"}</p>
-                            <p className="text-xs text-muted-foreground">{req.city}</p>
+                            <p className="font-semibold text-foreground text-sm">{req.patientName || req.takerName}</p>
+                            <p className="text-xs text-muted-foreground">{req.hospital || "—"} · {req.city}</p>
                           </div>
                         </div>
                         <div className="flex flex-col items-end gap-1.5 shrink-0">
@@ -1687,11 +1990,21 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
                         </div>
                       </div>
                       {req.reason && <p className="text-xs text-muted-foreground mb-3 line-clamp-2">{req.reason}</p>}
-                      <div className="border-t border-border pt-3 flex items-center justify-between">
-                        <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${req.status === "open" ? "bg-blue-50 text-blue-700 border-blue-200" : "bg-green-50 text-green-700 border-green-200"}`}>
-                          {req.status === "open" ? "Active" : "Fulfilled"}
-                        </span>
-                        <span className="text-xs text-muted-foreground">{req.responseCount} donor{req.responseCount !== 1 ? "s" : ""} responded</span>
+                      <div className="border-t border-border pt-3 flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${req.status === "open" ? "bg-blue-50 text-blue-700 border-blue-200" : req.status === "closed" ? "bg-gray-100 text-gray-500 border-gray-200" : "bg-green-50 text-green-700 border-green-200"}`}>
+                            {req.status === "open" ? "Active" : req.status === "closed" ? "Cancelled" : "Fulfilled"}
+                          </span>
+                          <span className="text-xs text-muted-foreground">{req.responseCount} donor{req.responseCount !== 1 ? "s" : ""} responded</span>
+                        </div>
+                        {req.status === "open" && (
+                          <button
+                            onClick={() => setCancelTarget(req)}
+                            className="text-xs text-destructive hover:text-destructive/80 font-medium flex items-center gap-1 transition-colors"
+                          >
+                            <XCircle className="w-3.5 h-3.5" /> Cancel Request
+                          </button>
+                        )}
                       </div>
                     </div>
                   );
@@ -1737,7 +2050,12 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
                           </div>
                         </div>
                       </div>
-                      {r.message && <p className="text-xs text-foreground/60 italic bg-accent/50 rounded px-3 py-2">"{r.message}"</p>}
+                      {r.message && <p className="text-xs text-foreground/60 italic bg-accent/50 rounded px-3 py-2 mb-3">"{r.message}"</p>}
+                      <button
+                        onClick={() => setChatTarget({ requestId: r.requestId, otherName: r.takerName ?? "Recipient" })}
+                        className="w-full flex items-center justify-center gap-2 border border-border py-2 rounded-md text-xs font-medium hover:bg-secondary transition-colors text-muted-foreground hover:text-foreground mt-2">
+                        <MessageCircle className="w-3.5 h-3.5" /> Chat with Recipient
+                      </button>
                     </div>
                   ))}
                 </div>
@@ -1788,6 +2106,20 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
                           </div>
                         </div>
                         {r.message && <p className="text-xs text-foreground/60 italic bg-accent/50 rounded px-3 py-2 mb-3">"{r.message}"</p>}
+                        <div className="flex gap-2 mb-2">
+                          <button
+                            onClick={() => setChatTarget({ requestId: r.requestId, otherName: r.donorName })}
+                            className="flex-1 flex items-center justify-center gap-1.5 border border-border py-2 rounded-md text-xs font-medium hover:bg-secondary transition-colors text-muted-foreground hover:text-foreground">
+                            <MessageCircle className="w-3.5 h-3.5" /> Chat
+                          </button>
+                          {!ratedRequestIds.has(r.requestId) && alreadyFulfilled && (
+                            <button
+                              onClick={() => setRatingTarget({ donorId: r.donorId, donorName: r.donorName, requestId: r.requestId })}
+                              className="flex-1 flex items-center justify-center gap-1.5 border border-amber-300 bg-amber-50 text-amber-700 py-2 rounded-md text-xs font-medium hover:bg-amber-100 transition-colors">
+                              <Star className="w-3.5 h-3.5" /> Rate Donor
+                            </button>
+                          )}
+                        </div>
                         {parentRequest && parentRequest.status !== "fulfilled" && !alreadyFulfilled ? (
                           <button
                             onClick={() => setFulfillTarget({ response: r, requestId: r.requestId })}
@@ -1905,10 +2237,48 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
           requestId={fulfillTarget.requestId}
           onClose={() => setFulfillTarget(null)}
           onSuccess={() => {
-            setFulfilledResponseIds(prev => new Set([...prev, fulfillTarget.response.id]));
+            const r = fulfillTarget.response;
+            setFulfilledResponseIds(prev => new Set([...prev, r.id]));
             setFulfillTarget(null);
             loadAllData();
             loadHistory();
+            // Prompt for rating after marking complete
+            setRatingTarget({ donorId: r.donorId, donorName: r.donorName, requestId: r.requestId });
+          }}
+        />
+      )}
+
+      {ratingTarget && (
+        <RatingModal
+          donorId={ratingTarget.donorId}
+          donorName={ratingTarget.donorName}
+          requestId={ratingTarget.requestId}
+          takerId={localProfile.id}
+          takerName={`${localProfile.firstName} ${localProfile.lastName}`}
+          onClose={() => setRatingTarget(null)}
+          onSuccess={() => {
+            setRatedRequestIds(prev => new Set([...prev, ratingTarget.requestId]));
+            setRatingTarget(null);
+          }}
+        />
+      )}
+
+      {chatTarget && (
+        <ChatModal
+          requestId={chatTarget.requestId}
+          currentUserId={localProfile.id}
+          currentUserName={`${localProfile.firstName} ${localProfile.lastName}`}
+          otherName={chatTarget.otherName}
+          onClose={() => setChatTarget(null)}
+        />
+      )}
+
+      {showOnboarding && (
+        <OnboardingModal
+          profile={localProfile}
+          onDone={() => {
+            localStorage.setItem(`lifelink_onboarded_${profile.id}`, "1");
+            setShowOnboarding(false);
           }}
         />
       )}
@@ -1930,19 +2300,23 @@ function DashboardScreen({ profile, onLogout }: { profile: Profile; onLogout: ()
         />
       )}
 
+      {cancelTarget && (
+        <CancelRequestModal
+          request={cancelTarget}
+          profile={localProfile}
+          onClose={() => setCancelTarget(null)}
+          onSuccess={() => {
+            setMyRequests(prev => prev.map(r => r.id === cancelTarget.id ? { ...r, status: "closed" } : r));
+            setCancelTarget(null);
+          }}
+        />
+      )}
+
       {showEditProfile && (
         <EditProfileModal
           profile={localProfile}
           onClose={() => setShowEditProfile(false)}
           onSuccess={(updated) => { setLocalProfile(updated); setShowEditProfile(false); }}
-        />
-      )}
-
-      {showChangeName && (
-        <ChangeNameModal
-          profile={localProfile}
-          onClose={() => setShowChangeName(false)}
-          onSuccess={(updated) => { setLocalProfile(updated); setShowChangeName(false); }}
         />
       )}
 
@@ -2289,7 +2663,7 @@ function AdminPanel({ onLogout }: { onLogout: () => void }) {
                           {req.bloodGroup}
                         </div>
                         <div className="flex-1 min-w-0">
-                          <p className="font-semibold text-foreground text-sm">{req.takerName}</p>
+                          <p className="font-semibold text-foreground text-sm">{req.patientName || req.takerName}</p>
                           <p className="text-xs text-muted-foreground truncate">{req.hospital} · {req.city} · {req.unitsRequired} unit{req.unitsRequired > 1 ? "s" : ""}</p>
                         </div>
                         <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">

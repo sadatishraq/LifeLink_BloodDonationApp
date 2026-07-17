@@ -67,13 +67,29 @@ app.post("/make-server-fd15274a/auth/register", async (c) => {
   return c.json({ profile });
 });
 
+app.get("/make-server-fd15274a/auth/check-email", async (c) => {
+  const email = c.req.query("email");
+  if (!email) return c.json({ error: "Email required" }, 400);
+  const existing = await kv.get(`auth:${email.toLowerCase().trim()}`);
+  return c.json({ taken: !!existing });
+});
+
 app.post("/make-server-fd15274a/auth/login", async (c) => {
   const { email, password } = await c.req.json();
   if (!email || !password) return c.json({ error: "Email and password are required" }, 400);
 
   const emailKey = `auth:${email.toLowerCase().trim()}`;
-  const auth = await kv.get(emailKey);
-  if (!auth) return c.json({ error: "No account found with this email" }, 404);
+  let auth: any = await kv.get(emailKey);
+  if (!auth) {
+    // Fallback: find profile by email field (accounts created before auth system)
+    const allProfiles = await kv.getByPrefix("profile:");
+    const matched: any = allProfiles.find((p: any) => p?.email?.toLowerCase().trim() === email.toLowerCase().trim());
+    if (!matched) return c.json({ error: "No account found with this email" }, 404);
+    // Auto-migrate: create auth record with the supplied password so login succeeds transparently
+    const encodedSafeMigrate = btoa(unescape(encodeURIComponent(password)));
+    auth = { profileId: matched.id, password: encodedSafeMigrate };
+    await kv.set(emailKey, auth);
+  }
 
   const encodedSafe = btoa(unescape(encodeURIComponent(password)));
   const encodedLegacy = btoa(password);
@@ -97,8 +113,21 @@ app.post("/make-server-fd15274a/profiles", async (c) => {
 });
 
 app.get("/make-server-fd15274a/profiles/:id", async (c) => {
-  const profile = await kv.get(`profile:${c.req.param("id")}`);
+  const id = c.req.param("id");
+  const profile: any = await kv.get(`profile:${id}`);
   if (!profile) return c.json({ error: "Not found" }, 404);
+
+  // Backfill donationCount from history for profiles created before this field existed
+  if (!profile.donationCount) {
+    const history = await kv.getByPrefix(`history:${id}:`);
+    const count = history.filter((h: any) => h.donorId === id).length;
+    if (count > 0) {
+      const updated = { ...profile, donationCount: count };
+      await kv.set(`profile:${id}`, updated);
+      return c.json({ profile: updated });
+    }
+  }
+
   return c.json({ profile });
 });
 
@@ -110,7 +139,6 @@ app.put("/make-server-fd15274a/profiles/:id", async (c) => {
     "firstName", "lastName", "phone", "altPhone",
     "address", "city", "state",
     "medicalConditions", "availableTodonate",
-    "hospital", "unitsRequired", "urgency", "reason",
   ];
   const patch: any = {};
   for (const key of allowed) {
@@ -256,6 +284,21 @@ app.get("/make-server-fd15274a/takers/:takerId/response-count", async (c) => {
   return c.json({ count });
 });
 
+// ── Cancel a request ─────────────────────────────────────────────────────
+// Called by the requester when they no longer need blood
+app.post("/make-server-fd15274a/requests/:requestId/cancel", async (c) => {
+  const requestId = c.req.param("requestId");
+  const { takerId } = await c.req.json();
+
+  const request: any = await kv.get(`request:${requestId}`);
+  if (!request) return c.json({ error: "Request not found" }, 404);
+  if (request.takerId !== takerId) return c.json({ error: "Unauthorized" }, 403);
+  if (request.status !== "open") return c.json({ error: "Only open requests can be cancelled" }, 400);
+
+  await kv.set(`request:${requestId}`, { ...request, status: "closed", closedAt: new Date().toISOString() });
+  return c.json({ success: true });
+});
+
 // ── Fulfill a request ────────────────────────────────────────────────────
 // Called by taker when donation is confirmed complete
 app.post("/make-server-fd15274a/requests/:requestId/fulfill", async (c) => {
@@ -302,12 +345,13 @@ app.post("/make-server-fd15274a/requests/:requestId/fulfill", async (c) => {
   await kv.set(`history:${request.takerId}:${historyId}`, { ...record, role: "taker" });
   await kv.set(`history:${response.donorId}:${historyId}`, { ...record, role: "donor" });
 
-  // Update donor's lastDonationDate in their profile
+  // Update donor's lastDonationDate and donationCount in their profile
   const donorProfileToUpdate: any = await kv.get(`profile:${response.donorId}`);
   if (donorProfileToUpdate) {
     await kv.set(`profile:${response.donorId}`, {
       ...donorProfileToUpdate,
       lastDonationDate: record.completedAt,
+      donationCount: (donorProfileToUpdate.donationCount ?? 0) + 1,
     });
   }
 
@@ -336,6 +380,56 @@ app.post("/make-server-fd15274a/requests/:requestId/fulfill", async (c) => {
   }
 
   return c.json({ record });
+});
+
+// ── Chat ─────────────────────────────────────────────────────────────────
+app.get("/make-server-fd15274a/chat/:requestId", async (c) => {
+  const messages = await kv.getByPrefix(`chat:${c.req.param("requestId")}:`);
+  messages.sort((a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  return c.json({ messages });
+});
+
+app.post("/make-server-fd15274a/chat/:requestId", async (c) => {
+  const requestId = c.req.param("requestId");
+  const { senderId, senderName, text } = await c.req.json();
+  if (!text?.trim()) return c.json({ error: "Message cannot be empty" }, 400);
+  const id = crypto.randomUUID();
+  const message = { id, requestId, senderId, senderName, text: text.trim(), createdAt: new Date().toISOString() };
+  await kv.set(`chat:${requestId}:${id}`, message);
+  return c.json({ message });
+});
+
+// ── Ratings ───────────────────────────────────────────────────────────────
+app.get("/make-server-fd15274a/ratings/:donorId", async (c) => {
+  const ratings = await kv.getByPrefix(`rating:${c.req.param("donorId")}:`);
+  ratings.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  return c.json({ ratings });
+});
+
+app.post("/make-server-fd15274a/ratings/:donorId", async (c) => {
+  const donorId = c.req.param("donorId");
+  const { requestId, takerId, takerName, stars, note } = await c.req.json();
+  if (!stars || stars < 1 || stars > 5) return c.json({ error: "Stars must be 1–5" }, 400);
+
+  // Prevent duplicate rating for same request
+  const existing = await kv.getByPrefix(`rating:${donorId}:`);
+  if (existing.some((r: any) => r.requestId === requestId)) {
+    return c.json({ error: "Already rated" }, 409);
+  }
+
+  const id = crypto.randomUUID();
+  const rating = { id, donorId, requestId, takerId, takerName, stars, note: note ?? "", createdAt: new Date().toISOString() };
+  await kv.set(`rating:${donorId}:${id}`, rating);
+
+  // Recompute and store average rating on donor profile
+  const allRatings = [...existing, rating];
+  const avg = allRatings.reduce((sum: number, r: any) => sum + r.stars, 0) / allRatings.length;
+  const donorProfile: any = await kv.get(`profile:${donorId}`);
+  if (donorProfile) {
+    await kv.set(`profile:${donorId}`, { ...donorProfile, ratingAvg: Math.round(avg * 10) / 10, ratingCount: allRatings.length });
+  }
+
+  return c.json({ rating });
 });
 
 // ── History ───────────────────────────────────────────────────────────────
@@ -405,10 +499,15 @@ app.get("/make-server-fd15274a/admin/users", async (c) => {
 
 app.delete("/make-server-fd15274a/admin/users/:id", async (c) => {
   const id = c.req.param("id");
-  const profile: any = await kv.get(`profile:${id}`);
+  let profile: any = await kv.get(`profile:${id}`);
+  if (!profile) {
+    // Fallback: scan all profiles to find by id field
+    const all = await kv.getByPrefix("profile:");
+    profile = all.find((p: any) => p?.id === id);
+  }
   if (!profile) return c.json({ error: "Not found" }, 404);
   await kv.del(`profile:${id}`);
-  if (profile.email) await kv.del(`auth:${profile.email}`);
+  if (profile.email) await kv.del(`auth:${profile.email.toLowerCase().trim()}`);
   return c.json({ success: true });
 });
 
