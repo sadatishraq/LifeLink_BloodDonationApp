@@ -1,0 +1,388 @@
+import { Hono } from "npm:hono";
+import { cors } from "npm:hono/cors";
+import { logger } from "npm:hono/logger";
+import * as kv from "./kv_store.tsx";
+
+const app = new Hono();
+
+app.use("*", logger(console.log));
+app.use("/*", cors({
+  origin: "*",
+  allowHeaders: ["Content-Type", "Authorization"],
+  allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  exposeHeaders: ["Content-Length"],
+  maxAge: 600,
+}));
+
+app.get("/make-server-fd15274a/health", (c) => c.json({ status: "ok" }));
+
+// ── Email via Resend ──────────────────────────────────────────────────────
+async function sendEmail(to: string, subject: string, html: string) {
+  const key = Deno.env.get("RESEND_API_KEY");
+  if (!key) return;
+  // Silently attempt — fails gracefully until a domain is verified at resend.com/domains
+  await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      from: "LifeLink <onboarding@resend.dev>",
+      to: [to],
+      subject,
+      html,
+    }),
+  }).catch(() => {});
+}
+
+// ── Auth ──────────────────────────────────────────────────────────────────
+app.post("/make-server-fd15274a/auth/register", async (c) => {
+  const body = await c.req.json();
+  const { email, password, ...profileData } = body;
+  if (!email || !password) return c.json({ error: "Email and password are required" }, 400);
+
+  const emailKey = `auth:${email.toLowerCase().trim()}`;
+  const existing = await kv.get(emailKey);
+  if (existing) return c.json({ error: "An account with this email already exists" }, 409);
+
+  const id = crypto.randomUUID();
+  const encoded = btoa(unescape(encodeURIComponent(password)));
+  const profile = { ...profileData, id, email: email.toLowerCase().trim(), createdAt: new Date().toISOString() };
+
+  await kv.set(`profile:${id}`, profile);
+  await kv.set(emailKey, { profileId: id, password: encoded });
+
+  // Welcome email
+  const isDonor = profile.role === "donor";
+  await sendEmail(profile.email, "Welcome to LifeLink 🩸", `
+    <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:24px">
+      <h2 style="color:#c0152a">Welcome to LifeLink, ${profile.firstName}!</h2>
+      <p>Your ${isDonor ? "donor" : "requester"} account has been created.</p>
+      <p><strong>Blood Group:</strong> ${profile.bloodGroup}</p>
+      ${isDonor
+        ? `<p>You'll receive an email whenever a taker posts a request that matches your blood group. Log in to browse live requests and respond.</p>`
+        : `<p>Your blood request has been posted. You'll receive an email as soon as a compatible donor responds with their contact details.</p>`}
+      <p style="color:#888;font-size:13px;margin-top:32px">LifeLink — Every drop saves a life.</p>
+    </div>
+  `);
+
+  return c.json({ profile });
+});
+
+app.post("/make-server-fd15274a/auth/login", async (c) => {
+  const { email, password } = await c.req.json();
+  if (!email || !password) return c.json({ error: "Email and password are required" }, 400);
+
+  const emailKey = `auth:${email.toLowerCase().trim()}`;
+  const auth = await kv.get(emailKey);
+  if (!auth) return c.json({ error: "No account found with this email" }, 404);
+
+  const encoded = btoa(unescape(encodeURIComponent(password)));
+  if (auth.password !== encoded) return c.json({ error: "Incorrect password" }, 401);
+
+  const profile = await kv.get(`profile:${auth.profileId}`);
+  if (!profile) return c.json({ error: "Profile not found" }, 404);
+
+  return c.json({ profile });
+});
+
+// ── Profiles ──────────────────────────────────────────────────────────────
+app.post("/make-server-fd15274a/profiles", async (c) => {
+  const body = await c.req.json();
+  const id = body.id ?? crypto.randomUUID();
+  const profile = { ...body, id, createdAt: body.createdAt ?? new Date().toISOString() };
+  await kv.set(`profile:${id}`, profile);
+  return c.json({ profile });
+});
+
+app.get("/make-server-fd15274a/profiles/:id", async (c) => {
+  const profile = await kv.get(`profile:${c.req.param("id")}`);
+  if (!profile) return c.json({ error: "Not found" }, 404);
+  return c.json({ profile });
+});
+
+// ── Blood Requests ────────────────────────────────────────────────────────
+app.post("/make-server-fd15274a/requests", async (c) => {
+  const body = await c.req.json();
+  const id = crypto.randomUUID();
+  const request = { ...body, id, status: "open", createdAt: new Date().toISOString(), responseCount: 0 };
+  await kv.set(`request:${id}`, request);
+  return c.json({ request });
+});
+
+app.get("/make-server-fd15274a/requests", async (c) => {
+  const all = await kv.getByPrefix("request:");
+  const requests = all.filter((r: any) => r && r.id && r.takerId);
+  requests.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  return c.json({ requests });
+});
+
+app.get("/make-server-fd15274a/requests/:id", async (c) => {
+  const request = await kv.get(`request:${c.req.param("id")}`);
+  if (!request) return c.json({ error: "Not found" }, 404);
+  return c.json({ request });
+});
+
+app.put("/make-server-fd15274a/requests/:id", async (c) => {
+  const id = c.req.param("id");
+  const existing = await kv.get(`request:${id}`);
+  if (!existing) return c.json({ error: "Not found" }, 404);
+  const updated = { ...existing, ...await c.req.json() };
+  await kv.set(`request:${id}`, updated);
+  return c.json({ request: updated });
+});
+
+// ── Donor Responses ───────────────────────────────────────────────────────
+app.post("/make-server-fd15274a/requests/:requestId/respond", async (c) => {
+  const requestId = c.req.param("requestId");
+  const body = await c.req.json();
+  const responseId = crypto.randomUUID();
+
+  const existing: any[] = await kv.getByPrefix(`response:${requestId}:`);
+  if (existing.some((r: any) => r.donorId === body.donorId)) {
+    return c.json({ error: "Already responded" }, 409);
+  }
+
+  const response = {
+    id: responseId, requestId,
+    donorId: body.donorId, donorName: body.donorName,
+    donorBloodGroup: body.donorBloodGroup, donorPhone: body.donorPhone,
+    donorEmail: body.donorEmail, donorCity: body.donorCity,
+    message: body.message ?? "", status: "pending",
+    createdAt: new Date().toISOString(),
+  };
+
+  await kv.set(`response:${requestId}:${responseId}`, response);
+
+  // Update responseCount
+  const request: any = await kv.get(`request:${requestId}`);
+  if (request) {
+    await kv.set(`request:${requestId}`, { ...request, responseCount: (request.responseCount ?? 0) + 1 });
+
+    // Email the taker
+    const takerProfile: any = await kv.get(`profile:${request.takerId}`);
+    if (takerProfile?.email) {
+      await sendEmail(
+        takerProfile.email,
+        `🩸 A donor has responded to your blood request`,
+        `
+        <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:24px">
+          <h2 style="color:#c0152a">Good news, ${takerProfile.firstName}!</h2>
+          <p><strong>${body.donorName}</strong> (Blood Group: <strong>${body.donorBloodGroup}</strong>) has offered to donate blood for your request.</p>
+          <div style="background:#fff0f0;border:1px solid #f5c6cb;border-radius:8px;padding:16px;margin:20px 0">
+            <p style="margin:0 0 8px"><strong>Donor Contact Details</strong></p>
+            <p style="margin:0 0 4px">📞 <a href="tel:${body.donorPhone}">${body.donorPhone}</a></p>
+            <p style="margin:0 0 4px">✉️ <a href="mailto:${body.donorEmail}">${body.donorEmail}</a></p>
+            <p style="margin:0">📍 ${body.donorCity}</p>
+          </div>
+          ${body.message ? `<p><strong>Message from donor:</strong> "${body.message}"</p>` : ""}
+          <p>Please reach out to them as soon as possible. Log in to LifeLink to see all responses.</p>
+          <p style="color:#888;font-size:13px;margin-top:32px">LifeLink — Every drop saves a life.</p>
+        </div>
+        `
+      );
+    }
+  }
+
+  return c.json({ response });
+});
+
+app.get("/make-server-fd15274a/requests/:requestId/responses", async (c) => {
+  const responses = await kv.getByPrefix(`response:${c.req.param("requestId")}:`);
+  responses.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  return c.json({ responses });
+});
+
+app.get("/make-server-fd15274a/donors/:donorId/responses", async (c) => {
+  const all = await kv.getByPrefix("response:");
+  const mine = all.filter((r: any) => r && r.donorId === c.req.param("donorId"));
+  mine.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  return c.json({ responses: mine });
+});
+
+app.get("/make-server-fd15274a/takers/:takerId/requests", async (c) => {
+  const all = await kv.getByPrefix("request:");
+  const mine = all.filter((r: any) => r && r.takerId === c.req.param("takerId"));
+  mine.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  return c.json({ requests: mine });
+});
+
+// Response count for a taker (used for badge polling)
+app.get("/make-server-fd15274a/takers/:takerId/response-count", async (c) => {
+  const takerId = c.req.param("takerId");
+  const allRequests = await kv.getByPrefix("request:");
+  const myRequests = allRequests.filter((r: any) => r && r.takerId === takerId);
+  let count = 0;
+  for (const req of myRequests) {
+    const responses = await kv.getByPrefix(`response:${req.id}:`);
+    count += responses.length;
+  }
+  return c.json({ count });
+});
+
+// ── Fulfill a request ────────────────────────────────────────────────────
+// Called by taker when donation is confirmed complete
+app.post("/make-server-fd15274a/requests/:requestId/fulfill", async (c) => {
+  const requestId = c.req.param("requestId");
+  const { responseId, notes } = await c.req.json();
+
+  const request: any = await kv.get(`request:${requestId}`);
+  if (!request) return c.json({ error: "Request not found" }, 404);
+
+  const response: any = await kv.get(`response:${requestId}:${responseId}`);
+  if (!response) return c.json({ error: "Response not found" }, 404);
+
+  // Mark request fulfilled
+  await kv.set(`request:${requestId}`, { ...request, status: "fulfilled", fulfilledAt: new Date().toISOString(), fulfilledByResponseId: responseId });
+
+  // Mark response accepted
+  await kv.set(`response:${requestId}:${responseId}`, { ...response, status: "accepted" });
+
+  // Build shared history record
+  const historyId = crypto.randomUUID();
+  const record = {
+    id: historyId,
+    requestId,
+    responseId,
+    donorId: response.donorId,
+    donorName: response.donorName,
+    donorBloodGroup: response.donorBloodGroup,
+    donorPhone: response.donorPhone,
+    donorEmail: response.donorEmail,
+    donorCity: response.donorCity,
+    takerId: request.takerId,
+    takerName: request.takerName,
+    bloodGroup: request.bloodGroup,
+    hospital: request.hospital,
+    city: request.city,
+    unitsRequired: request.unitsRequired,
+    urgency: request.urgency,
+    notes: notes ?? "",
+    completedAt: new Date().toISOString(),
+    requestCreatedAt: request.createdAt,
+  };
+
+  // Write history for both parties
+  await kv.set(`history:${request.takerId}:${historyId}`, { ...record, role: "taker" });
+  await kv.set(`history:${response.donorId}:${historyId}`, { ...record, role: "donor" });
+
+  // Update donor's lastDonationDate in their profile
+  const donorProfileToUpdate: any = await kv.get(`profile:${response.donorId}`);
+  if (donorProfileToUpdate) {
+    await kv.set(`profile:${response.donorId}`, {
+      ...donorProfileToUpdate,
+      lastDonationDate: record.completedAt,
+    });
+  }
+
+  // Email the donor to thank them
+  const donorProfile: any = await kv.get(`profile:${response.donorId}`);
+  if (donorProfile?.email) {
+    await sendEmail(
+      donorProfile.email,
+      "🩸 Your donation has been confirmed — Thank you!",
+      `
+      <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:24px">
+        <h2 style="color:#c0152a">Thank you, ${response.donorName}!</h2>
+        <p><strong>${request.takerName}</strong> has confirmed that your blood donation was completed successfully.</p>
+        <div style="background:#fff0f0;border:1px solid #f5c6cb;border-radius:8px;padding:16px;margin:20px 0">
+          <p style="margin:0 0 6px"><strong>Donation Details</strong></p>
+          <p style="margin:0 0 4px">Blood Group: <strong>${request.bloodGroup}</strong></p>
+          <p style="margin:0 0 4px">Hospital: ${request.hospital}</p>
+          <p style="margin:0 0 4px">Units: ${request.unitsRequired}</p>
+          ${notes ? `<p style="margin:8px 0 0">Note from recipient: "${notes}"</p>` : ""}
+        </div>
+        <p>Your generosity saved a life. This donation has been recorded in your history on LifeLink.</p>
+        <p style="color:#888;font-size:13px;margin-top:32px">LifeLink — Every drop saves a life.</p>
+      </div>
+      `
+    );
+  }
+
+  return c.json({ record });
+});
+
+// ── History ───────────────────────────────────────────────────────────────
+app.get("/make-server-fd15274a/history/:userId", async (c) => {
+  const records = await kv.getByPrefix(`history:${c.req.param("userId")}:`);
+  records.sort((a: any, b: any) => new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime());
+  return c.json({ records });
+});
+
+// ── Admin ─────────────────────────────────────────────────────────────────
+const ADMIN_USER = "admin";
+const ADMIN_PASS = "lifelink@admin";
+
+app.post("/make-server-fd15274a/admin/login", async (c) => {
+  const { username, password } = await c.req.json();
+  if (username === ADMIN_USER && password === ADMIN_PASS) {
+    return c.json({ success: true });
+  }
+  return c.json({ error: "Invalid credentials" }, 401);
+});
+
+app.get("/make-server-fd15274a/admin/stats", async (c) => {
+  const [profiles, requests, responses] = await Promise.all([
+    kv.getByPrefix("profile:"),
+    kv.getByPrefix("request:"),
+    kv.getByPrefix("response:"),
+  ]);
+  const validProfiles = profiles.filter((p: any) => p?.id);
+  const validRequests = requests.filter((r: any) => r?.id && r?.takerId);
+  const validResponses = responses.filter((r: any) => r?.id && r?.donorId);
+  return c.json({
+    totalUsers: validProfiles.length,
+    totalDonors: validProfiles.filter((p: any) => p.role === "donor").length,
+    totalTakers: validProfiles.filter((p: any) => p.role === "taker").length,
+    openRequests: validRequests.filter((r: any) => r.status === "open").length,
+    fulfilledRequests: validRequests.filter((r: any) => r.status === "fulfilled").length,
+    totalRequests: validRequests.length,
+    totalResponses: validResponses.length,
+  });
+});
+
+app.get("/make-server-fd15274a/admin/users", async (c) => {
+  const profiles = await kv.getByPrefix("profile:");
+  const valid = profiles.filter((p: any) => p?.id);
+  valid.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  return c.json({ users: valid });
+});
+
+app.delete("/make-server-fd15274a/admin/users/:id", async (c) => {
+  const id = c.req.param("id");
+  const profile: any = await kv.get(`profile:${id}`);
+  if (!profile) return c.json({ error: "Not found" }, 404);
+  await kv.del(`profile:${id}`);
+  if (profile.email) await kv.del(`auth:${profile.email}`);
+  return c.json({ success: true });
+});
+
+app.get("/make-server-fd15274a/admin/requests", async (c) => {
+  const all = await kv.getByPrefix("request:");
+  const valid = all.filter((r: any) => r?.id && r?.takerId);
+  valid.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  return c.json({ requests: valid });
+});
+
+app.put("/make-server-fd15274a/admin/requests/:id", async (c) => {
+  const id = c.req.param("id");
+  const existing = await kv.get(`request:${id}`);
+  if (!existing) return c.json({ error: "Not found" }, 404);
+  const body = await c.req.json();
+  const updated = { ...existing, ...body };
+  await kv.set(`request:${id}`, updated);
+  return c.json({ request: updated });
+});
+
+app.delete("/make-server-fd15274a/admin/requests/:id", async (c) => {
+  const id = c.req.param("id");
+  await kv.del(`request:${id}`);
+  return c.json({ success: true });
+});
+
+app.get("/make-server-fd15274a/admin/responses", async (c) => {
+  const all = await kv.getByPrefix("response:");
+  const valid = all.filter((r: any) => r?.id && r?.donorId);
+  valid.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  return c.json({ responses: valid });
+});
+
+Deno.serve(app.fetch);
